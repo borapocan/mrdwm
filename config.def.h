@@ -9,15 +9,13 @@ static const int showbar                  = 1;        /* 0 means no bar */
 static const int topbar                   = 1;        /* 0 means bottom bar */
 //static const int extrabar                 = 1;        /* 0 means no extra bar */
 static const char statussep		  = ';';
-static const char *splitdelim		  = ";";
-static const int splitstatus		  = 1;
 static const int user_bh		  = 30;        /* 2 is the default spacing around the bar's font */
 static const int user_dh		  = 30;        /* 2 is the default spacing around the bar's font */
 static const int vertpad		  = 10;
 static const int sidepad		  = 10;
 #define ICONSIZE 16
 #define ICONSPACING 5
-static const char buttonbar[]		  = "<O>";
+static const char buttonbar[]		  = " ";
 static const char *fonts[]                = { "monospace:size=15" };
 static const char dmenufont[]             = "monospace:size=15";
 static const char col_gray1[]             = "#222222";
@@ -25,12 +23,21 @@ static const char col_gray2[]             = "#444444";
 static const char col_gray3[]             = "#bbbbbb";
 static const char col_gray4[]             = "#eeeeee";
 static const char col_cyan[]              = "#005577";
+static const char col_red[]		  = "#ff0000";
+static const char col_yellow[]		  = "#ffff00";
+static const char col_pink[]		  = "#ff687b";
+
 static const char *colors[][3]            = {
 	/*               fg         bg         border   */
 	[SchemeNorm] = { col_gray3, col_gray1, col_gray2 },
-	[SchemeSel]  = { col_gray4, col_cyan,  col_cyan  },
-	[SchemeHov]  = { col_gray4, col_cyan,  col_cyan  },
-	[SchemeHid]  = { col_cyan,  col_gray1, col_cyan  },
+	[SchemeSel]  = { col_gray4, col_red,  col_red  },
+	[SchemeHov]  = { col_gray4, col_red,  col_red  },
+	[SchemeHid]  = { col_red,  col_gray1, col_red  },
+	[SchemeStatus]  = { col_gray3, col_gray1,  "#000000"  }, // Statusbar right {text,background,not used but cannot be empty}
+	[SchemeTagsSel]  = { col_gray4, col_red,  "#000000"  }, // Tagbar left selected {text,background,not used but cannot be empty}
+	[SchemeTagsNorm]  = { col_gray3, col_gray1,  "#000000"  }, // Tagbar left unselected {text,background,not used but cannot be empty}
+	[SchemeInfoSel]  = { col_gray4, col_red,  "#000000"  }, // infobar middle  selected {text,background,not used but cannot be empty}
+	[SchemeInfoNorm]  = { col_gray3, col_red,  "#000000"  }, // infobar middle  unselected {text,background,not used but cannot be empty}
 };
 
 /* tagging */
@@ -72,6 +79,7 @@ static const Layout layouts[] = {
 
 /* helper for spawning shell commands in the pre dwm-5.0 fashion */
 #define SHCMD(cmd) { .v = (const char*[]){ "/bin/sh", "-c", cmd, NULL } }
+#define STATUSBAR "dwmblocks"
 
 /* commands */
 static char dmenumon[2] = "0"; /* component of dmenucmd, manipulated in spawn() */

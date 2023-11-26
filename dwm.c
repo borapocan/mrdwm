@@ -66,7 +66,8 @@
 /* enums */
 enum { CurNormal, CurResize, CurMove, CurLast }; /* cursor */
 //enum { SchemeNorm, SchemeSel }; /* color schemes */
-enum { SchemeNorm, SchemeSel, SchemeHov, SchemeHid }; /* color schemes */
+//enum { SchemeNorm, SchemeSel, SchemeHov, SchemeHid }; /* color schemes */
+enum { SchemeNorm, SchemeSel, SchemeHov, SchemeHid, SchemeStatus, SchemeTagsSel, SchemeTagsNorm, SchemeInfoSel, SchemeInfoNorm }; /* color schemes */
 enum { NetSupported, NetWMName, NetWMIcon, NetWMState, NetWMCheck,
        NetWMFullscreen, NetActiveWindow, NetWMWindowType,
        NetWMWindowTypeDialog, NetClientList, NetLast }; /* EWMH atoms */
@@ -199,6 +200,7 @@ static Atom getatomprop(Client *c, Atom prop);
 static Picture geticonprop(Window w, unsigned int *icw, unsigned int *ich);
 static int getrootptr(int *x, int *y);
 static long getstate(Window w);
+//static pid_t getstatusbarpid();
 static int gettextprop(Window w, Atom atom, char *text, unsigned int size);
 static void grabbuttons(Client *c, int focused);
 static void grabkeys(void);
@@ -240,6 +242,7 @@ static void showwin(Client *c);
 static void showhide(Client *c);
 static void sighup(int unused);
 static void sigterm(int unused);
+//static void sigstatusbar(const Arg *arg);
 static void spawn(const Arg *arg);
 static void tag(const Arg *arg);
 static void tagmon(const Arg *arg);
@@ -281,6 +284,9 @@ static pid_t winpid(Window w);
 /* variables */
 static const char broken[] = "broken";
 static char stext[256];
+static int statusw;
+static int statussig;
+//static pid_t statuspid = -1;
 //static char estextl[256];
 //static char estextr[256];
 static int screen;
@@ -520,6 +526,7 @@ buttonpress(XEvent *e)
 	Client *c;
 	Monitor *m;
 	XButtonPressedEvent *ev = &e->xbutton;
+	char *text, *s, ch;
 
 	click = ClkRootWin;
 	/* focus monitor if necessary */
@@ -540,15 +547,30 @@ buttonpress(XEvent *e)
 			if (i < LENGTH(tags)) {
 				click = ClkTagBar;
 				arg.ui = 1 << i;
-			} else if (ev->x < x + TEXTW(selmon->ltsymbol))
+			} else if (ev->x < x + TEXTW(selmon->ltsymbol)) {
 				click = ClkLtSymbol;
 			//else if (ev->x > selmon->ww - (int)TEXTW(stext))
 			/* 2px right padding */
-			else if (ev->x > selmon->ww - TEXTW(stext) + lrpad - 2)
+			//else if (ev->x > selmon->ww - TEXTW(stext) + lrpad - 2)
+			} else if (ev->x > selmon->ww - statusw) {
+				x = selmon->ww - statusw;
 				click = ClkStatusText;
+				statussig = 0;
+				for (text = s = stext; *s && x <= ev->x; s++) {
+					if ((unsigned char)(*s) < ' ') {
+						ch = *s;
+						*s = '\0';
+						x += TEXTW(text) - lrpad;
+						*s = ch;
+						text = s + 1;
+						if (x >= ev->x)
+							break;
+						statussig = ch;
+					}
+				}
 			//else
 			//	click = ClkWinTitle;
-			else {
+			} else {
 				x += TEXTW(selmon->ltsymbol);
 				c = m->clients;
 
@@ -835,17 +857,32 @@ drawbar(Monitor *m)
 	int boxw = drw->fonts->h / 6 + 2;
 	unsigned int i, occ = 0, urg = 0;
 	Client *c;
-	char *mstext, *rstext;
-	int msx;
 
 	if (!m->showbar)
 		return;
 
 	/* draw status first so it can be overdrawn by tags later */
 	if (m == selmon) { /* status is only drawn on selected monitor */
-		drw_setscheme(drw, scheme[SchemeNorm]);
-		tw = TEXTW(stext) - lrpad + 2; /* 2px right padding */
-		drw_text(drw, m->ww - tw, 0, tw, bh, 0, stext, 0);
+		char *text, *s, ch;
+		//drw_setscheme(drw, scheme[SchemeNorm]);
+		drw_setscheme(drw, scheme[SchemeStatus]);
+		//tw = TEXTW(stext) - lrpad + 2; /* 2px right padding */
+		//drw_text(drw, m->ww - tw, 0, tw, bh, 0, stext, 0);
+		x = 0;
+		for (text = s = stext; *s; s++) {
+			if ((unsigned char)(*s) < ' ') {
+				ch = *s;
+				*s = '\0';
+				tw = TEXTW(text) - lrpad;
+				drw_text(drw, m->ww - statusw + x, 0, tw, bh, 0, text, 0);
+				x += tw;
+				*s = ch;
+				text = s + 1;
+			}
+		}
+		tw = TEXTW(text) - lrpad + 2;
+		drw_text(drw, m->ww - statusw + x, 0, tw, bh, 0, text, 0);
+		tw = statusw;
 	}
 
 	for (c = m->clients; c; c = c->next) {
@@ -861,16 +898,16 @@ drawbar(Monitor *m)
 	x = drw_text(drw, x, 0, w, bh, lrpad / 2, buttonbar, 0);
 	for (i = 0; i < LENGTH(tags); i++) {
 		w = TEXTW(tags[i]);
-		drw_setscheme(drw, scheme[m->tagset[m->seltags] & 1 << i ? SchemeSel : SchemeNorm]);
+		//drw_setscheme(drw, scheme[m->tagset[m->seltags] & 1 << i ? SchemeSel : SchemeNorm]);
+		drw_setscheme(drw, scheme[m->tagset[m->seltags] & 1 << i ? SchemeTagsSel : SchemeTagsNorm]);
 		drw_text(drw, x, 0, w, bh, lrpad / 2, tags[i], urg & 1 << i);
 		if (occ & 1 << i)
-			drw_rect(drw, x + boxs, boxs, boxw, boxw,
-				m == selmon && selmon->sel && selmon->sel->tags & 1 << i,
-				urg & 1 << i);
+			drw_rect(drw, x + boxs, boxs, boxw, boxw, m == selmon && selmon->sel && selmon->sel->tags & 1 << i, urg & 1 << i);
 		x += w;
 	}
 	w = TEXTW(m->ltsymbol);
-	drw_setscheme(drw, scheme[SchemeNorm]);
+	//drw_setscheme(drw, scheme[SchemeNorm]);
+	drw_setscheme(drw, scheme[SchemeTagsNorm]);
 	x = drw_text(drw, x, 0, w, bh, lrpad / 2, m->ltsymbol, 0);
 
 	if ((w = m->ww - tw - x) > bh) {
@@ -907,7 +944,8 @@ drawbar(Monitor *m)
 				x += tabw;
 			}
 		} else {
-			drw_setscheme(drw, scheme[SchemeNorm]);
+			//drw_setscheme(drw, scheme[SchemeNorm]);
+			drw_setscheme(drw, scheme[SchemeInfoNorm]);
 			drw_rect(drw, x, 0, w, bh, 1, 1);
 		}
 	}
@@ -925,20 +963,20 @@ drawbar(Monitor *m)
 		//}
 		drw_setscheme(drw, scheme[SchemeNorm]);
 		/* clear default bar draw buffer by drawing a blank rectangle */
-		drw_rect(drw, 0, 0, m->ww, bh, 1, 1);
+		drw_rect(drw, 0, 0, m->ww, dh, 1, 1);
 
 		int buttonl = TEXTW(buttonbar);
 		drw_text(drw, 0, 0, buttonl, dh, 0, buttonbar, 0);
 
-		int etwl = TEXTW("hello");
+		int etwl = TEXTW("hello") - lrpad + 2;
 		drw_text(drw, buttonl, 0, etwl, dh, 0, "hello", 0);
 
 		int etwm = TEXTW("hello") - lrpad + 2; /* 2px right padding */
 		drw_text(drw, (m->ww - etwm + lrpad) / 2, 0, etwm, dh, 0, "world", 0);
 
-		int etwr = TEXTW("again");
+		int etwr = TEXTW("again") - lrpad + 2;
 		drw_text(drw, m->ww - etwm, 0, etwr, dh, 0, docktext, 0);
-		drw_map(drw, m->dockwin, 0, 0, m->ww, bh);
+		drw_map(drw, m->dockwin, 0, 0, m->ww, dh);
 	}
 }
 
@@ -1201,6 +1239,30 @@ geticonprop(Window win, unsigned int *picw, unsigned int *pich)
 
 	return ret;
 }
+
+//pid_t
+//getstatusbarpid()
+//{
+//	char buf[32], *str = buf, *c;
+//	FILE *fp;
+//
+//	if (statuspid > 0) {
+//		snprintf(buf, sizeof(buf), "/proc/%u/cmdline", statuspid);
+//		if ((fp = fopen(buf, "r"))) {
+//			fgets(buf, sizeof(buf), fp);
+//			while ((c = strchr(str, '/')))
+//				str = c + 1;
+//			fclose(fp);
+//			if (!strcmp(str, STATUSBAR))
+//				return statuspid;
+//		}
+//	}
+//	if (!(fp = popen("pidof -s "STATUSBAR, "r")))
+//		return -1;
+//	fgets(buf, sizeof(buf), fp);
+//	pclose(fp);
+//	return strtol(buf, NULL, 10);
+//}
 
 int
 getrootptr(int *x, int *y)
@@ -2157,6 +2219,20 @@ sigterm(int unused)
 	quit(&a);
 }
 
+//void
+//sigstatusbar(const Arg *arg)
+//{
+//	union sigval sv;
+//
+//	if (!statussig)
+//		return;
+//	sv.sival_int = arg->i;
+//	if ((statuspid = getstatusbarpid()) <= 0)
+//		return;
+//
+//	sigqueue(statuspid, SIGRTMIN+statussig, sv);
+//}
+
 void
 spawn(const Arg *arg)
 {
@@ -2608,10 +2684,29 @@ updatestatus(void)
 		//strcpy(stext, "dwm-"VERSION);
 	//char text[768];
 	if (!gettextprop(root, XA_WM_NAME, stext, sizeof(stext))) {
-		strcpy(stext, "dwm-"VERSION);
+ 		strcpy(stext, "dwm-"VERSION);
+		statusw = TEXTW(stext) - lrpad + 2;
+	} else {
+		char *text, *s, ch;
+
+		statusw  = 0;
+		for (text = s = stext; *s; s++) {
+			if ((unsigned char)(*s) < ' ') {
+				ch = *s;
+				*s = '\0';
+				statusw += TEXTW(text) - lrpad;
+				*s = ch;
+				text = s + 1;
+			}
+		}
+		statusw += TEXTW(text) - lrpad + 2;
+
+	}
+	//if (!gettextprop(root, XA_WM_NAME, stext, sizeof(stext))) {
+	//	strcpy(stext, "dwm-"VERSION);
 		//estextl[0] = '\0';
 		//estextr[0] = '\0';
-	}
+	//}
 	//else {
 	//	char *l = strchr(text, statussep);
 	//	if (l) {
