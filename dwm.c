@@ -209,6 +209,7 @@ static void hidewin(Client *c);
 static void incnmaster(const Arg *arg);
 static void keypress(XEvent *e);
 static void killclient(const Arg *arg);
+static void layoutmenu(const Arg *arg);
 static void manage(Window w, XWindowAttributes *wa);
 static void mappingnotify(XEvent *e);
 static void maprequest(XEvent *e);
@@ -973,6 +974,8 @@ drawbar(Monitor *m)
 
 		int etwm = TEXTW("hello") - lrpad + 2; /* 2px right padding */
 		drw_text(drw, (m->ww - etwm + lrpad) / 2, 0, etwm, dh, 0, "world", 0);
+		//Picture img = drw_picture_create_resized(drw, "~/Downloads/fire.png", 50, dh, 50, dh);
+		//drw_pic(drw, (m->ww - etwm + lrpad) / 2 + etwm, 0, 50, dh, img);
 
 		int etwr = TEXTW("again") - lrpad + 2;
 		drw_text(drw, m->ww - etwm, 0, etwr, dh, 0, docktext, 0);
@@ -1443,6 +1446,24 @@ killclient(const Arg *arg)
 		XSetErrorHandler(xerror);
 		XUngrabServer(dpy);
 	}
+}
+
+void
+layoutmenu(const Arg *arg) {
+	FILE *p;
+	char c[3], *s;
+	int i;
+
+	if (!(p = popen(layoutmenu_cmd, "r")))
+		 return;
+	s = fgets(c, sizeof(c), p);
+	pclose(p);
+
+	if (!s || *s == '\0' || c[0] == '\0')
+		 return;
+
+	i = atoi(c);
+	setlayout(&((Arg) { .v = &layouts[i] }));
 }
 
 void
