@@ -31,6 +31,7 @@
 #include <limits.h>
 #include <stdint.h>
 #include <sys/types.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <X11/cursorfont.h>
 #include <X11/keysym.h>
@@ -149,7 +150,7 @@ struct Monitor {
 	Client *stack;
 	Monitor *next;
 	Window barwin;
-	Window dockwin;
+	//Window dockwin;
 	//Window extrabarwin;
 	const Layout *lt[2];
 };
@@ -206,6 +207,7 @@ static void grabbuttons(Client *c, int focused);
 static void grabkeys(void);
 static void hide(const Arg *arg);
 static void hidewin(Client *c);
+static int ispanel(Client *c);
 static void incnmaster(const Arg *arg);
 static void keypress(XEvent *e);
 static void killclient(const Arg *arg);
@@ -225,6 +227,7 @@ static void resizeclient(Client *c, int x, int y, int w, int h);
 static void resizemouse(const Arg *arg);
 static void restack(Monitor *m);
 static void run(void);
+static void runautostart(void);
 static void scan(void);
 static int sendevent(Client *c, Atom proto);
 static void sendmon(Client *c, Monitor *m);
@@ -282,6 +285,10 @@ static Client *termforwin(const Client *c);
 static pid_t winpid(Window w);
 
 /* variables */
+static const char autostartblocksh[] = "autostart_blocking.sh";
+static const char autostartsh[] = "autostart.sh";
+static const char dwmdir[] = "dwm";
+static const char localshare[] = ".local/share";
 static const char broken[] = "broken";
 static char stext[256];
 static int statusw;
@@ -588,12 +595,14 @@ buttonpress(XEvent *e)
 
 			}
 		}
-	} else if (ev->window == selmon->dockwin) {
-		x = 0;
-		x += TEXTW(buttonbar);
-		if (ev->x < x)
-			click = ClkButton;
-	} else if ((c = wintoclient(ev->window))) {
+	}
+	//else if (ev->window == selmon->dockwin) {
+	//	x = 0;
+	//	x += TEXTW(buttonbar);
+	//	if (ev->x < x)
+	//		click = ClkButton;
+	//}
+	else if ((c = wintoclient(ev->window))) {
 		focus(c);
 		restack(selmon);
 		XAllowEvents(dpy, ReplayPointer, CurrentTime);
@@ -722,7 +731,7 @@ configurenotify(XEvent *e)
 					if (c->isfullscreen)
 						resizeclient(c, m->mx, m->my, m->mw, m->mh);
 				XMoveResizeWindow(dpy, m->barwin, m->wx, m->by, m->ww, bh);
-				XMoveResizeWindow(dpy, m->dockwin, m->wx, m->wh - dh, m->ww, dh);
+				//XMoveResizeWindow(dpy, m->dockwin, m->wx, m->wh - dh, m->ww, dh);
 			}
 			focus(NULL);
 			arrange(NULL);
@@ -886,6 +895,9 @@ drawbar(Monitor *m)
 	}
 
 	for (c = m->clients; c; c = c->next) {
+		// prevent showing the panel as active application:
+	        if (ispanel(c))
+			continue;
 		if (ISVISIBLE(c))
 			n++;
 		occ |= c->tags;
@@ -920,6 +932,8 @@ drawbar(Monitor *m)
 			int remainder = w % n;
 			int tabw = (1.0 / (double)n) * w + 1;
 			for (c = m->clients; c; c = c->next) {
+				if (ispanel(c))
+					continue;
 				if (!ISVISIBLE(c))
 					continue;
 				if (m->hov == c)
@@ -953,31 +967,31 @@ drawbar(Monitor *m)
 	m->btw = w;
 	drw_map(drw, m->barwin, 0, 0, m->ww, bh);
 
-	char *docktext = "again";
+	//char *docktext = "again";
 
-	if (m == selmon) { /* extra status is only drawn on selected monitor */
-		//rstext = strdup(docktext);
-		//if (splitstatus) {
-		//	mstext = strsep(&rstext, splitdelim);
-		//	msx = (m->ww - TEXTW(mstext) + lrpad) / 2;
-		//}
-		drw_setscheme(drw, scheme[SchemeNorm]);
-		/* clear default bar draw buffer by drawing a blank rectangle */
-		drw_rect(drw, 0, 0, m->ww, dh, 1, 1);
+	//if (m == selmon) { /* extra status is only drawn on selected monitor */
+	//	//rstext = strdup(docktext);
+	//	//if (splitstatus) {
+	//	//	mstext = strsep(&rstext, splitdelim);
+	//	//	msx = (m->ww - TEXTW(mstext) + lrpad) / 2;
+	//	//}
+	//	drw_setscheme(drw, scheme[SchemeNorm]);
+	//	/* clear default bar draw buffer by drawing a blank rectangle */
+	//	drw_rect(drw, 0, 0, m->ww, dh, 1, 1);
 
-		int buttonl = TEXTW(buttonbar);
-		drw_text(drw, 0, 0, buttonl, dh, 0, buttonbar, 0);
+	//	int buttonl = TEXTW(buttonbar);
+	//	drw_text(drw, 0, 0, buttonl, dh, 0, buttonbar, 0);
 
-		int etwl = TEXTW("hello") - lrpad + 2;
-		drw_text(drw, buttonl, 0, etwl, dh, 0, "hello", 0);
+	//	int etwl = TEXTW("hello") - lrpad + 2;
+	//	drw_text(drw, buttonl, 0, etwl, dh, 0, "hello", 0);
 
-		int etwm = TEXTW("hello") - lrpad + 2; /* 2px right padding */
-		drw_text(drw, (m->ww - etwm + lrpad) / 2, 0, etwm, dh, 0, "world", 0);
+	//	int etwm = TEXTW("hello") - lrpad + 2; /* 2px right padding */
+	//	drw_text(drw, (m->ww - etwm + lrpad) / 2, 0, etwm, dh, 0, "world", 0);
 
-		int etwr = TEXTW("again") - lrpad + 2;
-		drw_text(drw, m->ww - etwm, 0, etwr, dh, 0, docktext, 0);
-		drw_map(drw, m->dockwin, 0, 0, m->ww, dh);
-	}
+	//	int etwr = TEXTW("again") - lrpad + 2;
+	//	drw_text(drw, m->ww - etwm, 0, etwr, dh, 0, docktext, 0);
+	//	drw_map(drw, m->dockwin, 0, 0, m->ww, dh);
+	//}
 }
 
 void
@@ -1039,11 +1053,19 @@ focus(Client *c)
 			selmon = c->mon;
 		if (c->isurgent)
 			seturgent(c, 0);
-		detachstack(c);
-		attachstack(c);
-		grabbuttons(c, 1);
-		XSetWindowBorder(dpy, c->win, scheme[SchemeSel][ColBorder].pixel);
-		setfocus(c);
+		//detachstack(c);
+		//attachstack(c);
+		//grabbuttons(c, 1);
+		//XSetWindowBorder(dpy, c->win, scheme[SchemeSel][ColBorder].pixel);
+		//setfocus(c);
+		// prevents the panel getting focus when tag switching:
+		if (!ispanel(c)) {
+			detachstack(c);
+			attachstack(c);
+			grabbuttons(c, 1);
+			XSetWindowBorder(dpy, c->win, scheme[SchemeSel][ColBorder].pixel);
+			setfocus(c);
+		}
 	} else {
 		XSetInputFocus(dpy, root, RevertToPointerRoot, CurrentTime);
 		XDeleteProperty(dpy, root, netatom[NetActiveWindow]);
@@ -1112,6 +1134,8 @@ focusstackhid(const Arg *arg) {
 	focusstack(arg->i, 1);
 }
 
+int focussed_panel = 0; // helper for focusstack, avoids loops when panel is the only client
+
 void
 focusstack(int inc, int hid)
 {
@@ -1159,6 +1183,12 @@ focusstack(int inc, int hid)
 			showwin(c);
 			c->mon->hidsel = 1;
 		}
+		// skipping the panel when switching focus:
+		//if (ispanel(c) && focussed_panel == 0) {
+  		//  focussed_panel = 1;
+  		//  //focusstack(c->arg->i, focussed_panel);
+  		//  //focussed_panel = 0;
+  		//}
 	}
 }
 
@@ -1394,6 +1424,11 @@ hidewin(Client *c) {
 	XUngrabServer(dpy);
 }
 
+int
+ispanel(Client *c) {
+    return !strcmp(c->name, panel[0]);
+}
+
 void
 incnmaster(const Arg *arg)
 {
@@ -1480,7 +1515,15 @@ manage(Window w, XWindowAttributes *wa)
 	c->x = MAX(c->x, c->mon->wx);
 	c->y = MAX(c->y, c->mon->wy);
 	c->bw = borderpx;
-
+	// no border - even when active
+	//if (ispanel(c)) c->bw = c->oldbw = 0;
+	if (ispanel(c)) {
+		wc.y = c->mon->my + c->mon->mh - wa->height;
+		wc.x = c->mon->mx;
+		wc.stack_mode = Above;
+		XConfigureWindow(dpy, w, CWY | CWX | CWStackMode, &wc);
+		//c->bw = c->oldbw = 0;
+	}
 	wc.border_width = c->bw;
 	XConfigureWindow(dpy, w, CWBorderWidth, &wc);
 	XSetWindowBorder(dpy, w, scheme[SchemeNorm][ColBorder].pixel);
@@ -1787,7 +1830,7 @@ recttomon(int x, int y, int w, int h)
 void
 resize(Client *c, int x, int y, int w, int h, int interact)
 {
-	if (applysizehints(c, &x, &y, &w, &h, interact))
+	if (ispanel(c) || applysizehints(c, &x, &y, &w, &h, interact))
 		resizeclient(c, x, y, w, h);
 }
 
@@ -1801,6 +1844,8 @@ resizeclient(Client *c, int x, int y, int w, int h)
 	c->oldw = c->w; c->w = wc.width = w;
 	c->oldh = c->h; c->h = wc.height = h;
 	wc.border_width = c->bw;
+	// nail it to no border & y=0:
+	//if (ispanel(c)) c->y = c->oldy = c->bw = wc.y = wc.border_width = 0;
 	XConfigureWindow(dpy, c->win, CWX|CWY|CWWidth|CWHeight|CWBorderWidth, &wc);
 	configure(c);
 	XSync(dpy, False);
@@ -1897,6 +1942,83 @@ run(void)
 	while (running && !XNextEvent(dpy, &ev))
 		if (handler[ev.type])
 			handler[ev.type](&ev); /* call handler */
+}
+
+void
+runautostart(void)
+{
+	char *pathpfx;
+	char *path;
+	char *xdgdatahome;
+	char *home;
+	struct stat sb;
+
+	if ((home = getenv("HOME")) == NULL)
+		/* this is almost impossible */
+		return;
+
+	/* if $XDG_DATA_HOME is set and not empty, use $XDG_DATA_HOME/dwm,
+	 * otherwise use ~/.local/share/dwm as autostart script directory
+	 */
+	xdgdatahome = getenv("XDG_DATA_HOME");
+	if (xdgdatahome != NULL && *xdgdatahome != '\0') {
+		/* space for path segments, separators and nul */
+		pathpfx = ecalloc(1, strlen(xdgdatahome) + strlen(dwmdir) + 2);
+
+		if (sprintf(pathpfx, "%s/%s", xdgdatahome, dwmdir) <= 0) {
+			free(pathpfx);
+			return;
+		}
+	} else {
+		/* space for path segments, separators and nul */
+		pathpfx = ecalloc(1, strlen(home) + strlen(localshare)
+		                     + strlen(dwmdir) + 3);
+
+		if (sprintf(pathpfx, "%s/%s/%s", home, localshare, dwmdir) < 0) {
+			free(pathpfx);
+			return;
+		}
+	}
+
+	/* check if the autostart script directory exists */
+	if (! (stat(pathpfx, &sb) == 0 && S_ISDIR(sb.st_mode))) {
+		/* the XDG conformant path does not exist or is no directory
+		 * so we try ~/.dwm instead
+		 */
+		char *pathpfx_new = realloc(pathpfx, strlen(home) + strlen(dwmdir) + 3);
+		if(pathpfx_new == NULL) {
+			free(pathpfx);
+			return;
+		}
+		pathpfx = pathpfx_new;
+
+		if (sprintf(pathpfx, "%s/.%s", home, dwmdir) <= 0) {
+			free(pathpfx);
+			return;
+		}
+	}
+
+	/* try the blocking script first */
+	path = ecalloc(1, strlen(pathpfx) + strlen(autostartblocksh) + 2);
+	if (sprintf(path, "%s/%s", pathpfx, autostartblocksh) <= 0) {
+		free(path);
+		free(pathpfx);
+	}
+
+	if (access(path, X_OK) == 0)
+		system(path);
+
+	/* now the non-blocking script */
+	if (sprintf(path, "%s/%s", pathpfx, autostartsh) <= 0) {
+		free(path);
+		free(pathpfx);
+	}
+
+	if (access(path, X_OK) == 0)
+		system(strcat(path, " &"));
+
+	free(pathpfx);
+	free(path);
 }
 
 void
@@ -2487,7 +2609,7 @@ updatebars(void)
 		.background_pixmap = ParentRelative,
 		.event_mask = ButtonPressMask|ExposureMask
 	};
-	XClassHint ch = {"dwm", "dwm"};
+	XClassHint ch = {"dwm"};
 	for (m = mons; m; m = m->next) {
 		if (!m->barwin) {
 			m->barwin = XCreateWindow(dpy, root, m->wx, m->by, m->ww, bh, 0, DefaultDepth(dpy, screen),
@@ -2498,15 +2620,15 @@ updatebars(void)
 			XSelectInput(dpy, m->barwin, ButtonPressMask|PointerMotionMask);
 			XSetClassHint(dpy, m->barwin, &ch);
 		}
-		if (!m->dockwin) {
-			m->dockwin = XCreateWindow(dpy, root, m->wx, m->mh - dh, m->ww, dh, 0, DefaultDepth(dpy, screen),
-					CopyFromParent, DefaultVisual(dpy, screen),
-					CWOverrideRedirect|CWBackPixmap|CWEventMask, &wa);
-			XDefineCursor(dpy, m->dockwin, cursor[CurNormal]->cursor);
-			XMapRaised(dpy, m->dockwin);
-			XSelectInput(dpy, m->dockwin, ButtonPressMask|PointerMotionMask);
-			XSetClassHint(dpy, m->dockwin, &ch);
-		}
+		//if (!m->dockwin) {
+		//	m->dockwin = XCreateWindow(dpy, root, m->wx, m->mh - dh, m->ww, dh, 0, DefaultDepth(dpy, screen),
+		//			CopyFromParent, DefaultVisual(dpy, screen),
+		//			CWOverrideRedirect|CWBackPixmap|CWEventMask, &wa);
+		//	XDefineCursor(dpy, m->dockwin, cursor[CurNormal]->cursor);
+		//	XMapRaised(dpy, m->dockwin);
+		//	XSelectInput(dpy, m->dockwin, ButtonPressMask|PointerMotionMask);
+		//	XSetClassHint(dpy, m->dockwin, &ch);
+		//}
 	}
 }
 
@@ -3008,6 +3130,7 @@ main(int argc, char *argv[])
 		die("pledge");
 #endif /* __OpenBSD__ */
 	scan();
+	runautostart();
 	run();
 	if (restart) execvp(argv[0], argv);
 	cleanup();
