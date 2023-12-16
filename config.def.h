@@ -4,6 +4,8 @@
 static const unsigned int borderpx        = 1;        /* border pixel of windows */
 static const unsigned int gappx		  = 10;        /* gaps between windows */
 static const unsigned int snap            = 32;       /* snap pixel */
+static const int scalepreview       = 4;        /* preview scaling (display w and h / scalepreview) */
+static const int previewbar         = 1;        /* show the bar in the preview window */
 static const char panel[][20]		  = { "xfce4-panel", "Xfce4-panel" }; /* name & cls of panel win */
 static const int swallowfloating	  = 0;	      /* 1 means swallow floating windows by default */
 static const int showbar                  = 1;        /* 0 means no bar */
@@ -16,7 +18,7 @@ static const int vertpad		  = 10;
 static const int sidepad		  = 10;
 #define ICONSIZE 16
 #define ICONSPACING 5
-static const char buttonbar[]		  = " ";
+//static const char buttonbar[]		  = " ";
 static const char *fonts[]                = { "monospace:size=15" };
 static const char dmenufont[]             = "monospace:size=15";
 static const char col_gray1[]             = "#222222";
@@ -30,7 +32,7 @@ static const char col_pink[]		  = "#ff687b";
 
 static const char *colors[][3]            = {
 	/*               fg         bg         border   */
-	[SchemeNorm] = { col_gray3, col_gray1, col_gray2 },
+	[SchemeNorm] = { col_gray3, col_cyan, col_gray2 },
 	[SchemeSel]  = { col_gray4, col_red,  col_red  },
 	[SchemeHov]  = { col_gray4, col_red,  col_red  },
 	[SchemeHid]  = { col_red,  col_gray1, col_red  },
@@ -77,7 +79,8 @@ static const Layout layouts[] = {
 { MODKEY,                       KEY,      view,           {.ui = 1 << TAG} }, \
 { MODKEY|ControlMask,           KEY,      toggleview,     {.ui = 1 << TAG} }, \
 { MODKEY|ShiftMask,             KEY,      tag,            {.ui = 1 << TAG} }, \
-{ MODKEY|ControlMask|ShiftMask, KEY,      toggletag,      {.ui = 1 << TAG} },
+{ MODKEY|ControlMask|ShiftMask, KEY,      previewtag,     {.ui = TAG } },     \
+//{ MODKEY|ControlMask|ShiftMask, KEY,      toggletag,      {.ui = 1 << TAG} }, \
 
 /* helper for spawning shell commands in the pre dwm-5.0 fashion */
 #define SHCMD(cmd) { .v = (const char*[]){ "/bin/sh", "-c", cmd, NULL } }
