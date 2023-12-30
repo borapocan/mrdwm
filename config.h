@@ -18,7 +18,6 @@ static const int vertpad		  = 10;
 static const int sidepad		  = 10;
 #define ICONSIZE 16
 #define ICONSPACING 5
-//static const char buttonbar[]		  = " ";
 static const char *fonts[]                = { "monospace:size=15", "NotoColorEmoji:pixelsize=12:antialias=true:autohint=true" };
 static const char dmenufont[]             = "monospace:size=15";
 static const char col_gray1[]             = "#222222";
@@ -71,6 +70,7 @@ static const Layout layouts[] = {
 	{ "[]=",      tile },    /* first entry is default */
 	{ "><>",      NULL },    /* no layout function means floating behavior */
 	{ "[M]",      monocle },
+	{ "|||",      tcl},
 };
 
 /* key definitions */
@@ -114,6 +114,7 @@ static const Key keys[] = {
 	{ MODKEY,                       XK_t,      setlayout,      {.v = &layouts[0]} },
 	{ MODKEY,                       XK_f,      setlayout,      {.v = &layouts[1]} },
 	{ MODKEY,                       XK_m,      setlayout,      {.v = &layouts[2]} },
+	{ MODKEY|ShiftMask,             XK_t,      setlayout,      {.v = &layouts[3]} },
 	{ MODKEY,                       XK_space,  setlayout,      {0} },
 	{ MODKEY|ShiftMask,             XK_space,  togglefloating, {0} },
 	{ MODKEY,                       XK_0,      view,           {.ui = ~0 } },
