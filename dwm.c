@@ -205,7 +205,7 @@ static Atom getatomprop(Client *c, Atom prop);
 static Picture geticonprop(Window w, unsigned int *icw, unsigned int *ich);
 static int getrootptr(int *x, int *y);
 static long getstate(Window w);
-//static pid_t getstatusbarpid();
+static pid_t getstatusbarpid();
 static int gettextprop(Window w, Atom atom, char *text, unsigned int size);
 static void grabbuttons(Client *c, int focused);
 static void grabkeys(void);
@@ -215,6 +215,7 @@ static int ispanel(Client *c);
 static void incnmaster(const Arg *arg);
 static void keypress(XEvent *e);
 static void killclient(const Arg *arg);
+static void layoutmenu(const Arg *arg);
 static void manage(Window w, XWindowAttributes *wa);
 static void mappingnotify(XEvent *e);
 static void maprequest(XEvent *e);
@@ -249,7 +250,7 @@ static void showwin(Client *c);
 static void showhide(Client *c);
 static void sighup(int unused);
 static void sigterm(int unused);
-//static void sigstatusbar(const Arg *arg);
+static void sigstatusbar(const Arg *arg);
 static void spawn(const Arg *arg);
 static void tag(const Arg *arg);
 static void tagmon(const Arg *arg);
@@ -300,7 +301,7 @@ static const char broken[] = "broken";
 static char stext[256];
 static int statusw;
 static int statussig;
-//static pid_t statuspid = -1;
+static pid_t statuspid = -1;
 //static char estextl[256];
 //static char estextr[256];
 static int screen;
@@ -934,7 +935,8 @@ drawbar(Monitor *m)
 		drw_setscheme(drw, scheme[m->tagset[m->seltags] & 1 << i ? SchemeTagsSel : SchemeTagsNorm]);
 		drw_text(drw, x, 0, w, bh, lrpad / 2, tags[i], urg & 1 << i);
 		if (occ & 1 << i)
-			drw_rect(drw, x + boxs, boxs, boxw, boxw, m == selmon && selmon->sel && selmon->sel->tags & 1 << i, urg & 1 << i);
+			//drw_rect(drw, x + boxs, boxs, boxw, boxw, m == selmon && selmon->sel && selmon->sel->tags & 1 << i, urg & 1 << i);
+			drw_rect(drw, x + boxw, 0, w - ( 2 * boxw + 1), boxw, m == selmon && selmon->sel && selmon->sel->tags & 1 << i, urg & 1 << i);
 		x += w;
 	}
 
@@ -977,7 +979,8 @@ drawbar(Monitor *m)
 				}
 				//drw_text(drw, x, 0, tabw, bh, lrpad / 2, c->name, 0);
 				drw_text(drw, x, 0, tabw, bh, lrpad / 2 + (m->sel->icon ? m->sel->icw + ICONSPACING : 0), m->sel->name, 0);
-				if (m->sel->icon) drw_pic(drw, x + lrpad / 2, (bh - m->sel->ich) / 2, m->sel->icw, m->sel->ich, m->sel->icon);
+				if (m->sel->icon)
+					drw_pic(drw, x + lrpad / 2, (bh - m->sel->ich) / 2, m->sel->icw, m->sel->ich, m->sel->icon);
 				x += tabw;
 			}
 		} else {
@@ -1293,29 +1296,29 @@ geticonprop(Window win, unsigned int *picw, unsigned int *pich)
 	return ret;
 }
 
-//pid_t
-//getstatusbarpid()
-//{
-//	char buf[32], *str = buf, *c;
-//	FILE *fp;
-//
-//	if (statuspid > 0) {
-//		snprintf(buf, sizeof(buf), "/proc/%u/cmdline", statuspid);
-//		if ((fp = fopen(buf, "r"))) {
-//			fgets(buf, sizeof(buf), fp);
-//			while ((c = strchr(str, '/')))
-//				str = c + 1;
-//			fclose(fp);
-//			if (!strcmp(str, STATUSBAR))
-//				return statuspid;
-//		}
-//	}
-//	if (!(fp = popen("pidof -s "STATUSBAR, "r")))
-//		return -1;
-//	fgets(buf, sizeof(buf), fp);
-//	pclose(fp);
-//	return strtol(buf, NULL, 10);
-//}
+pid_t
+getstatusbarpid()
+{
+	char buf[32], *str = buf, *c;
+	FILE *fp;
+
+	if (statuspid > 0) {
+		snprintf(buf, sizeof(buf), "/proc/%u/cmdline", statuspid);
+		if ((fp = fopen(buf, "r"))) {
+			fgets(buf, sizeof(buf), fp);
+			while ((c = strchr(str, '/')))
+				str = c + 1;
+			fclose(fp);
+			if (!strcmp(str, STATUSBAR))
+				return statuspid;
+		}
+	}
+	if (!(fp = popen("pidof -s "STATUSBAR, "r")))
+		return -1;
+	fgets(buf, sizeof(buf), fp);
+	pclose(fp);
+	return strtol(buf, NULL, 10);
+}
 
 int
 getrootptr(int *x, int *y)
@@ -1501,6 +1504,24 @@ killclient(const Arg *arg)
 		XSetErrorHandler(xerror);
 		XUngrabServer(dpy);
 	}
+}
+
+void
+layoutmenu(const Arg *arg) {
+	FILE *p;
+	char c[3], *s;
+	int i;
+
+	if (!(p = popen(layoutmenu_cmd, "r")))
+		 return;
+	s = fgets(c, sizeof(c), p);
+	pclose(p);
+
+	if (!s || *s == '\0' || c[0] == '\0')
+		 return;
+
+	i = atoi(c);
+	setlayout(&((Arg) { .v = &layouts[i] }));
 }
 
 void
@@ -2473,19 +2494,19 @@ sigterm(int unused)
 	quit(&a);
 }
 
-//void
-//sigstatusbar(const Arg *arg)
-//{
-//	union sigval sv;
-//
-//	if (!statussig)
-//		return;
-//	sv.sival_int = arg->i;
-//	if ((statuspid = getstatusbarpid()) <= 0)
-//		return;
-//
-//	sigqueue(statuspid, SIGRTMIN+statussig, sv);
-//}
+void
+sigstatusbar(const Arg *arg)
+{
+	union sigval sv;
+
+	if (!statussig)
+		return;
+	sv.sival_int = arg->i;
+	if ((statuspid = getstatusbarpid()) <= 0)
+		return;
+
+	sigqueue(statuspid, SIGRTMIN+statussig, sv);
+}
 
 void
 spawn(const Arg *arg)
