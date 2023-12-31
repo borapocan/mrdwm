@@ -31,15 +31,15 @@ static const char col_pink[]		  = "#ff687b";
 
 static const char *colors[][3]            = {
 	/*               fg         bg         border   */
-	[SchemeNorm] = { col_gray3, col_cyan, col_gray2 },
-	[SchemeSel]  = { col_gray4, col_red,  col_red  },
-	[SchemeHov]  = { col_gray4, col_red,  col_red  },
-	[SchemeHid]  = { col_red,  col_gray1, col_red  },
-	[SchemeStatus]  = { col_gray3, col_gray1,  "#000000"  }, // Statusbar right {text,background,not used but cannot be empty}
-	[SchemeTagsSel]  = { col_gray4, col_red,  "#000000"  }, // Tagbar left selected {text,background,not used but cannot be empty}
-	[SchemeTagsNorm]  = { col_gray3, col_gray1,  "#000000"  }, // Tagbar left unselected {text,background,not used but cannot be empty}
-	[SchemeInfoSel]  = { col_gray4, col_red,  "#000000"  }, // infobar middle  selected {text,background,not used but cannot be empty}
-	[SchemeInfoNorm]  = { col_gray3, col_red,  "#000000"  }, // infobar middle  unselected {text,background,not used but cannot be empty}
+	[SchemeNorm] = { "#bbbbbb", "#005577", "#444444" },
+	[SchemeSel]  = { "#eeeeee", "#ff0000", "#ff0000"  },
+	[SchemeHov]  = { "#eeeeee", "#ff0000", "#ff0000"  },
+	[SchemeHid]  = { "#ff0000", "#222222", "#ff0000" },
+	[SchemeStatus]  = { "#bbbbbb", "#222222",  "#000000"  }, // Statusbar right {text,background,not used but cannot be empty}
+	[SchemeTagsSel]  = { "#eeeeee", "#ff0000",  "#000000"  }, // Tagbar left selected {text,background,not used but cannot be empty}
+	[SchemeTagsNorm]  = { "#bbbbbb", "#222222",  "#000000"  }, // Tagbar left unselected {text,background,not used but cannot be empty}
+	[SchemeInfoSel]  = { "#eeeeee", "#ff0000",  "#000000"  }, // infobar middle  selected {text,background,not used but cannot be empty}
+	[SchemeInfoNorm]  = { "#bbbbbb", "#ff0000",  "#000000"  }, // infobar middle  unselected {text,background,not used but cannot be empty}
 };
 
 /* tagging */
@@ -164,6 +164,7 @@ static const Button buttons[] = {
 //	{ ClkLtSymbol,          0,              Button3,        setlayout,      {.v = &layouts[2]} },
 	{ ClkWinTitle,          0,              Button1,        togglewin,      {0} },
 	{ ClkWinTitle,          0,              Button2,        zoom,           {0} },
+	{ ClkWinTitle,          0,              Button3,        killclient,     {0} },
 	//{ ClkStatusText,        0,              Button2,        spawn,          {.v = termcmd } },
 	{ ClkStatusText,        0,              Button1,        sigstatusbar,   {.i = 1} },
 	{ ClkStatusText,        0,              Button2,        sigstatusbar,   {.i = 2} },
