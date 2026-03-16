@@ -1019,7 +1019,7 @@ void
 drawbar(Monitor *m)
 {
 	int x, w, tw = 0, n = 0, scm; //etwl = 0, etwr = 0, scm;
-	int boxs = drw->fonts->h / 9;
+	//int boxs = drw->fonts->h / 9;
 	int boxw = drw->fonts->h / 6 + 2;
 	unsigned int i, occ = 0, urg = 0;
 	Client *c;
@@ -1114,9 +1114,13 @@ drawbar(Monitor *m)
 					remainder--;
 				}
 				//drw_text(drw, x, 0, tabw, bh, lrpad / 2, c->name, 0);
-				drw_text(drw, x, 0, tabw, bh, lrpad / 2 + (m->sel->icon ? m->sel->icw + ICONSPACING : 0), m->sel->name, 0);
-				if (m->sel->icon)
-					drw_pic(drw, x + lrpad / 2, (bh - m->sel->ich) / 2, m->sel->icw, m->sel->ich, m->sel->icon);
+				//drw_text(drw, x, 0, tabw, bh, lrpad / 2 + (m->sel->icon ? m->sel->icw + ICONSPACING : 0), m->sel->name, 0);
+				drw_text(drw, x, 0, tabw, bh, lrpad / 2 + (c->icon ? c->icw + ICONSPACING : 0), c->name, 0);
+				if (c->icon)
+					drw_pic(drw, x + lrpad / 2, (bh - c->ich) / 2, c->icw, c->ich, c->icon);
+
+				//if (m->sel->icon)
+				//	drw_pic(drw, x + lrpad / 2, (bh - m->sel->ich) / 2, m->sel->icw, m->sel->ich, m->sel->icon);
 				x += tabw;
 			}
 		} else {
@@ -1659,6 +1663,9 @@ hidewin(Client *c) {
 	if (!c || HIDDEN(c))
 		return;
 
+	if (ispanel(c))
+		return;
+
 	Window w = c->win;
 	static XWindowAttributes ra, ca;
 
@@ -1719,8 +1726,15 @@ keypress(XEvent *e)
 void
 killclient(const Arg *arg)
 {
-	if (!selmon->sel)
-		return;
+	//if (!selmon->sel)
+	if (!selmon->sel) {
+		Client *c = selmon->clients;
+		if (c)
+			selmon->sel = c;
+		else
+			return;
+	}
+
 	if (!sendevent(selmon->sel, wmatom[WMDelete])) {
 		XGrabServer(dpy);
 		XSetErrorHandler(xerrordummy);
@@ -2958,6 +2972,9 @@ void
 togglewin(const Arg *arg)
 {
 	Client *c = (Client*)arg->v;
+
+	if (!c)
+		return;
 
 	if (c == selmon->sel) {
 		hidewin(c);

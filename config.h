@@ -4,8 +4,8 @@
 static const unsigned int borderpx        = 1;        /* border pixel of windows */
 static const unsigned int gappx		  = 10;        /* gaps between windows */
 static const unsigned int snap            = 32;       /* snap pixel */
-static const int scalepreview       = 4;        /* preview scaling (display w and h / scalepreview) */
-static const int previewbar         = 1;        /* show the bar in the preview window */
+static const int scalepreview		  = 4;        /* preview scaling (display w and h / scalepreview) */
+static const int previewbar		  = 1;        /* show the bar in the preview window */
 static const char panel[][20]		  = { "xfce4-panel", "Xfce4-panel" }; /* name & cls of panel win */
 static const int swallowfloating	  = 0;	      /* 1 means swallow floating windows by default */
 static const int showbar                  = 1;        /* 0 means no bar */
@@ -20,26 +20,28 @@ static const int sidepad		  = 10;
 #define ICONSPACING 5
 static const char *fonts[]                = { "monospace:size=15", "NotoColorEmoji:pixelsize=12:antialias=true:autohint=true" };
 static const char dmenufont[]             = "monospace:size=15";
+
 static const char col_gray1[]             = "#222222";
 static const char col_gray2[]             = "#444444";
 static const char col_gray3[]             = "#bbbbbb";
 static const char col_gray4[]             = "#eeeeee";
 static const char col_cyan[]              = "#005577";
-static const char col_red[]		  = "#ff0000";
-static const char col_yellow[]		  = "#ffff00";
-static const char col_pink[]		  = "#ff687b";
+//static const char col_red[]		  = "#ff0000";
+//static const char col_yellow[]	  = "#ffff00";
+//static const char col_pink[]		  = "#ff687b";
 
-static const char *colors[][3]            = {
-	/*               fg         bg         border   */
-	[SchemeNorm] = { "#bbbbbb", "#005577", "#444444" },
-	[SchemeSel]  = { "#eeeeee", "#ff0000", "#ff0000"  },
-	[SchemeHov]  = { "#eeeeee", "#ff0000", "#ff0000"  },
-	[SchemeHid]  = { "#ff0000", "#222222", "#ff0000" },
-	[SchemeStatus]  = { "#bbbbbb", "#222222",  "#000000"  }, // Statusbar right {text,background,not used but cannot be empty}
-	[SchemeTagsSel]  = { "#eeeeee", "#ff0000",  "#000000"  }, // Tagbar left selected {text,background,not used but cannot be empty}
-	[SchemeTagsNorm]  = { "#bbbbbb", "#222222",  "#000000"  }, // Tagbar left unselected {text,background,not used but cannot be empty}
-	[SchemeInfoSel]  = { "#eeeeee", "#ff0000",  "#000000"  }, // infobar middle  selected {text,background,not used but cannot be empty}
-	[SchemeInfoNorm]  = { "#bbbbbb", "#ff0000",  "#000000"  }, // infobar middle  unselected {text,background,not used but cannot be empty}
+#include "colors.h"
+static const char *colors[][3] = {
+	/*			fg		    bg			border   */
+	[SchemeNorm]     = { sch_norm_fg,	sch_norm_bg,		sch_norm_border },
+	[SchemeSel]      = { sch_sel_fg,	sch_sel_bg,		sch_sel_border  },
+	[SchemeHov]      = { sch_hov_fg,	sch_hov_bg,		sch_hov_border  },
+	[SchemeHid]      = { sch_hid_fg,	sch_hid_bg,		sch_hid_border },
+	[SchemeStatus]   = { sch_status_fg,	sch_status_bg,  	sch_status_border  }, // Statusbar right {text,background,not used but cannot be empty}
+	[SchemeTagsSel]  = { sch_tags_sel_fg,   sch_tags_sel_bg,  	sch_tags_sel_border  }, // Tagbar left selected {text,background,not used but cannot be empty}
+	[SchemeTagsNorm] = { sch_tags_norm_fg,  sch_tags_norm_bg,	sch_tags_norm_border  }, // Tagbar left unselected {text,background,not used but cannot be empty}
+	[SchemeInfoSel]  = { sch_info_sel_fg,   sch_info_sel_bg,  	sch_info_sel_border  }, // infobar middle  selected {text,background,not used but cannot be empty}
+	[SchemeInfoNorm] = { sch_info_norm_fg,  sch_info_norm_bg,	sch_info_norm_border  }, // infobar middle  unselected {text,background,not used but cannot be empty}
 };
 
 /* tagging */
@@ -50,12 +52,14 @@ static const Rule rules[] = {
 	 *	WM_CLASS(STRING) = instance, class
 	 *	WM_NAME(STRING) = title
 	*/
-	/* class    instance   title       tags mask   isfloating  isterminal	noswallow   monitor */
-	{ "Gimp",    NULL,     NULL,           0,         1,          0,           0,        -1 },
-	{ "Firefox", NULL,     NULL,           1 << 8,    0,          0,          -1,        -1 },
-	{ "st",      NULL,     NULL,           0,         0,          1,           0,        -1 },
-	{ panel[1],  NULL,     NULL,     (1 << 9) - 1,    1,          0,          -1,        -1 },
-	{ NULL,      NULL,     "Event Tester", 0,         0,          0,           1,        -1 }, /* xev */
+	/* class    instance   title		      tags mask   isfloating  isterminal   noswallow   monitor */
+	{ "Gimp",    NULL,     NULL,			   0,         1,          0,           0,        -1 },
+	{ "Firefox", NULL,     NULL,		      1 << 8,         0,          0,           0,        -1 },
+	{ "st",      NULL,     NULL,			   0,         0,          1,           0,        -1 },
+	{ "zenity",  NULL,     NULL,			   0,         1,          0,           1,        -1 }, // Add this line for Zenity
+	{ "Yad",     NULL,     NULL,			   0,         1,          0,           1,        -1 }, // Add this line for Yad
+	{ panel[1],  NULL,     NULL,		(1 << 9) - 1,         1,          0,          -1,        -1 },
+	{ NULL,      NULL,     "Event Tester",		   0,         0,          0,           1,        -1 }, /* xev */
 
 };
 
@@ -85,10 +89,11 @@ static const Layout layouts[] = {
 { MODKEY,                       KEY,      view,           {.ui = 1 << TAG} }, \
 { MODKEY|ControlMask,           KEY,      toggleview,     {.ui = 1 << TAG} }, \
 { MODKEY|ShiftMask,             KEY,      tag,            {.ui = 1 << TAG} }, \
-{ MODKEY|ControlMask|ShiftMask, KEY,      previewtag,     {.ui = TAG } },     \
-//{ MODKEY|ControlMask|ShiftMask, KEY,      toggletag,      {.ui = 1 << TAG} }, \
+{ MODKEY|ControlMask|ShiftMask, KEY,      previewtag,     {.ui = TAG } }, \
 
+/* { MODKEY|ControlMask|ShiftMask, KEY,      toggletag,      {.ui = 1 << TAG} }, */
 /* helper for spawning shell commands in the pre dwm-5.0 fashion */
+
 #define SHCMD(cmd) { .v = (const char*[]){ "/bin/sh", "-c", cmd, NULL } }
 #define STATUSBAR "dwmblocks"
 
