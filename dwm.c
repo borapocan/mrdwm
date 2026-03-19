@@ -344,6 +344,8 @@ static Drw *drw;
 static Monitor *mons, *selmon;
 static Window root, wmcheckwin;
 static xcb_connection_t *xcon;
+static int vp;               /* vertical padding for bar */
+static int sp;               /* side padding for bar */
 
 /* configuration, allows nested code to access above variables */
 #include "config.h"
@@ -861,8 +863,9 @@ configurenotify(XEvent *e)
 				for (c = m->clients; c; c = c->next)
 					if (c->isfullscreen)
 						resizeclient(c, m->mx, m->my, m->mw, m->mh);
-				XMoveResizeWindow(dpy, m->barwin, m->wx, m->by, m->ww, bh);
-				//XMoveResizeWindow(dpy, m->dockwin, m->wx, m->wh - dh, m->ww, dh);
+				//XMoveResizeWindow(dpy, m->barwin, m->wx, m->by, m->ww, bh);
+				XMoveResizeWindow(dpy, m->barwin, m->wx + sp, m->by + vp, m->ww -  2 * sp, bh);
+				////XMoveResizeWindow(dpy, m->dockwin, m->wx, m->wh - dh, m->ww, dh);
 			}
 			focus(NULL);
 			arrange(NULL);
@@ -1027,29 +1030,53 @@ drawbar(Monitor *m)
 	if (!m->showbar)
 		return;
 
-	/* draw status first so it can be overdrawn by tags later */
 	if (m == selmon) { /* status is only drawn on selected monitor */
 		char *text, *s, ch;
-		//drw_setscheme(drw, scheme[SchemeNorm]);
 		drw_setscheme(drw, scheme[SchemeStatus]);
-		//tw = TEXTW(stext) - lrpad + 2; /* 2px right padding */
-		//drw_text(drw, m->ww - tw, 0, tw, bh, 0, stext, 0);
-		x = 0;
+		tw = statusw;
+		x = m->ww - statusw;
 		for (text = s = stext; *s; s++) {
 			if ((unsigned char)(*s) < ' ') {
 				ch = *s;
 				*s = '\0';
-				tw = TEXTW(text) - lrpad;
-				drw_text(drw, m->ww - statusw + x, 0, tw, bh, 0, text, 0);
-				x += tw;
+				w = TEXTW(text) - lrpad;
+				drw_text(drw, x, 0, w, bh, 0, text, 0);
+				x += w;
 				*s = ch;
 				text = s + 1;
 			}
 		}
-		tw = TEXTW(text) - lrpad + 2;
-		drw_text(drw, m->ww - statusw + x, 0, tw, bh, 0, text, 0);
+		w = TEXTW(text);
+		//w = TEXTW(text) - lrpad + 2;
+		drw_text(drw, x, 0, w, bh, 0, text, 0);
 		tw = statusw;
 	}
+
+	/* draw status first so it can be overdrawn by tags later */
+	//if (m == selmon) { /* status is only drawn on selected monitor */
+	//	char *text, *s, ch;
+	//	//drw_setscheme(drw, scheme[SchemeNorm]);
+	//	drw_setscheme(drw, scheme[SchemeStatus]);
+	//	//tw = TEXTW(stext) - lrpad + 2; /* 2px right padding */
+	//	//drw_text(drw, m->ww - tw, 0, tw, bh, 0, stext, 0);
+	//	x = 0;
+	//	for (text = s = stext; *s; s++) {
+	//		if ((unsigned char)(*s) < ' ') {
+	//			ch = *s;
+	//			*s = '\0';
+	//			tw = TEXTW(text) - lrpad;
+	//			//drw_text(drw, m->ww - statusw + x, 0, tw, bh, 0, text, 0);
+	//			drw_text(drw, m->ww - sw - 2 * sp, 0, sw, bh, 0, stext, 0);
+	//			x += tw;
+	//			*s = ch;
+	//			text = s + 1;
+	//		}
+	//	}
+	//	tw = TEXTW(text) - lrpad + 2;
+	//	//drw_text(drw, m->ww - statusw + x, 0, tw, bh, 0, text, 0);
+	//	drw_text(drw, m->ww - sw - 2 * sp, 0, sw, bh, 0, stext, 0);
+	//	tw = statusw;
+	//}
 
 	for (c = m->clients; c; c = c->next) {
 		// prevent showing the panel as active application:
@@ -1115,18 +1142,29 @@ drawbar(Monitor *m)
 				}
 				//drw_text(drw, x, 0, tabw, bh, lrpad / 2, c->name, 0);
 				//drw_text(drw, x, 0, tabw, bh, lrpad / 2 + (m->sel->icon ? m->sel->icw + ICONSPACING : 0), m->sel->name, 0);
-				drw_text(drw, x, 0, tabw, bh, lrpad / 2 + (c->icon ? c->icw + ICONSPACING : 0), c->name, 0);
+				//drw_text(drw, x, 0, tabw, bh, lrpad / 2 + (c->icon ? c->icw + ICONSPACING : 0), c->name, 0);
+				drw_text(drw, x, 0, tabw - 1, bh, lrpad / 2 + (c->icon ? c->icw + ICONSPACING : 0), c->name, 0);
 				if (c->icon)
 					drw_pic(drw, x + lrpad / 2, (bh - c->ich) / 2, c->icw, c->ich, c->icon);
+				XSetForeground(dpy, drw->gc, 0xFFFFFF);
+				XDrawLine(dpy, drw->drawable, drw->gc, x, 0, x, bh);
+				XDrawLine(dpy, drw->drawable, drw->gc, x + tabw - 1, 0, x + tabw - 1, bh);
 
 				//if (m->sel->icon)
 				//	drw_pic(drw, x + lrpad / 2, (bh - m->sel->ich) / 2, m->sel->icw, m->sel->ich, m->sel->icon);
 				x += tabw;
 			}
 		} else {
-			//drw_setscheme(drw, scheme[SchemeNorm]);
 			drw_setscheme(drw, scheme[SchemeInfoNorm]);
-			drw_rect(drw, x, 0, w, bh, 1, 1);
+			drw_rect(drw, x, 0, w - 2 * sp, bh, 1, 1);
+			XSetForeground(dpy, drw->gc, 0xFFFFFF);
+			XDrawLine(dpy, drw->drawable, drw->gc, x, 0, x, bh);
+			//XDrawLine(dpy, drw->drawable, drw->gc, x + w - 2 * sp - 1, 0, x + w - 2 * sp - 1, bh);
+			XDrawLine(dpy, drw->drawable, drw->gc, x + w - 1, 0, x + w - 1, bh);
+			//drw_setscheme(drw, scheme[SchemeNorm]);
+			//drw_setscheme(drw, scheme[SchemeInfoNorm]);
+			//drw_rect(drw, x, 0, w, bh, 1, 1);
+			//drw_rect(drw, x, 0, w - 2 * sp, bh, 1, 1);
 		}
 	}
 	m->bt = n;
@@ -1748,21 +1786,38 @@ killclient(const Arg *arg)
 
 void
 layoutmenu(const Arg *arg) {
-	FILE *p;
-	char c[3], *s;
-	int i;
-
-	if (!(p = popen(layoutmenu_cmd, "r")))
-		 return;
-	s = fgets(c, sizeof(c), p);
-	pclose(p);
-
-	if (!s || *s == '\0' || c[0] == '\0')
-		 return;
-
-	i = atoi(c);
-	setlayout(&((Arg) { .v = &layouts[i] }));
+        FILE *p;
+        char c[3], *s;
+        int i;
+        XUngrabPointer(dpy, CurrentTime);
+        XSync(dpy, False);
+        if (!(p = popen(layoutmenu_cmd, "r")))
+                 return;
+        s = fgets(c, sizeof(c), p);
+        pclose(p);
+        if (!s || *s == '\0' || c[0] == '\0')
+                 return;
+        i = atoi(c);
+        setlayout(&((Arg) { .v = &layouts[i] }));
 }
+
+//void
+//layoutmenu(const Arg *arg) {
+//	FILE *p;
+//	char c[3], *s;
+//	int i;
+//
+//	if (!(p = popen(layoutmenu_cmd, "r")))
+//		 return;
+//	s = fgets(c, sizeof(c), p);
+//	pclose(p);
+//
+//	if (!s || *s == '\0' || c[0] == '\0')
+//		 return;
+//
+//	i = atoi(c);
+//	setlayout(&((Arg) { .v = &layouts[i] }));
+//}
 
 void
 manage(Window w, XWindowAttributes *wa)
@@ -2603,6 +2658,8 @@ setup(void)
 	bh = user_bh ? user_bh : drw->fonts->h + 2;
 	dh = user_dh ? user_dh : drw->fonts->h + 2;
 	updategeom();
+	sp = sidepad;
+	vp = (topbar == 1) ? vertpad : - vertpad;
 	/* init atoms */
 	utf8string = XInternAtom(dpy, "UTF8_STRING", False);
 	wmatom[WMProtocols] = XInternAtom(dpy, "WM_PROTOCOLS", False);
@@ -2630,6 +2687,7 @@ setup(void)
 	/* init bars */
 	updatebars();
 	updatestatus();
+	updatebarpos(selmon);
 	/* supporting window for NetWMCheck */
 	wmcheckwin = XCreateSimpleWindow(dpy, root, 0, 0, 1, 1, 0, 0, 0);
 	XChangeProperty(dpy, wmcheckwin, netatom[NetWMCheck], XA_WINDOW, 32,
@@ -2873,47 +2931,72 @@ tile(Monitor *m)
 {
 	unsigned int i, n, h, mw, my, ty;
 	Client *c;
-
 	for (n = 0, c = nexttiled(m->clients); c; c = nexttiled(c->next), n++);
 	if (n == 0)
 		return;
-
 	if (n > m->nmaster)
 		mw = m->nmaster ? m->ww * m->mfact : 0;
 	else
-//		mw = m->ww;
-//	for (i = my = ty = 0, c = nexttiled(m->clients); c; c = nexttiled(c->next), i++)
-//		if (i < m->nmaster) {
-//			h = (m->wh - my) / (MIN(n, m->nmaster) - i);
-//			resize(c, m->wx, m->wy + my, mw - (2*c->bw), h - (2*c->bw), 0);
-//			if (my + HEIGHT(c) < m->wh)
-//				my += HEIGHT(c);
 		mw = m->ww - m->gappx;
 	for (i = 0, my = ty = m->gappx, c = nexttiled(m->clients); c; c = nexttiled(c->next), i++)
 		if (i < m->nmaster) {
-			h = (m->wh - my) / (MIN(n, m->nmaster) - i) - m->gappx;
+			h = (m->wh - my - m->gappx) / (MIN(n, m->nmaster) - i);
 			resize(c, m->wx + m->gappx, m->wy + my, mw - (2*c->bw) - m->gappx, h - (2*c->bw), 0);
-			if (my + HEIGHT(c) + m->gappx < m->wh)
-				my += HEIGHT(c) + m->gappx;
-
+			my += HEIGHT(c) + m->gappx;
 		} else {
-			//h = (m->wh - ty) / (n - i);
-			//resize(c, m->wx + mw, m->wy + ty, m->ww - mw - (2*c->bw), h - (2*c->bw), 0);
-			//if (ty + HEIGHT(c) < m->wh)
-			//	ty += HEIGHT(c);
-			h = (m->wh - ty) / (n - i) - m->gappx;
+			h = (m->wh - ty - m->gappx) / (n - i);
 			resize(c, m->wx + mw + m->gappx, m->wy + ty, m->ww - mw - (2*c->bw) - 2*m->gappx, h - (2*c->bw), 0);
-			if (ty + HEIGHT(c) + m->gappx < m->wh)
-				ty += HEIGHT(c) + m->gappx;
+			ty += HEIGHT(c) + m->gappx;
 		}
 }
+
+//void
+//tile(Monitor *m)
+//{
+//	unsigned int i, n, h, mw, my, ty;
+//	Client *c;
+//
+//	for (n = 0, c = nexttiled(m->clients); c; c = nexttiled(c->next), n++);
+//	if (n == 0)
+//		return;
+//
+//	if (n > m->nmaster)
+//		mw = m->nmaster ? m->ww * m->mfact : 0;
+//	else
+////		mw = m->ww;
+////	for (i = my = ty = 0, c = nexttiled(m->clients); c; c = nexttiled(c->next), i++)
+////		if (i < m->nmaster) {
+////			h = (m->wh - my) / (MIN(n, m->nmaster) - i);
+////			resize(c, m->wx, m->wy + my, mw - (2*c->bw), h - (2*c->bw), 0);
+////			if (my + HEIGHT(c) < m->wh)
+////				my += HEIGHT(c);
+//		mw = m->ww - m->gappx;
+//	for (i = 0, my = ty = m->gappx, c = nexttiled(m->clients); c; c = nexttiled(c->next), i++)
+//		if (i < m->nmaster) {
+//			h = (m->wh - my) / (MIN(n, m->nmaster) - i) - m->gappx;
+//			resize(c, m->wx + m->gappx, m->wy + my, mw - (2*c->bw) - m->gappx, h - (2*c->bw), 0);
+//			if (my + HEIGHT(c) + m->gappx < m->wh)
+//				my += HEIGHT(c) + m->gappx;
+//
+//		} else {
+//			//h = (m->wh - ty) / (n - i);
+//			//resize(c, m->wx + mw, m->wy + ty, m->ww - mw - (2*c->bw), h - (2*c->bw), 0);
+//			//if (ty + HEIGHT(c) < m->wh)
+//			//	ty += HEIGHT(c);
+//			h = (m->wh - ty) / (n - i) - m->gappx;
+//			resize(c, m->wx + mw + m->gappx, m->wy + ty, m->ww - mw - (2*c->bw) - 2*m->gappx, h - (2*c->bw), 0);
+//			if (ty + HEIGHT(c) + m->gappx < m->wh)
+//				ty += HEIGHT(c) + m->gappx;
+//		}
+//}
 
 void
 togglebar(const Arg *arg)
 {
 	selmon->showbar = !selmon->showbar;
 	updatebarpos(selmon);
-	XMoveResizeWindow(dpy, selmon->barwin, selmon->wx, selmon->by, selmon->ww, bh);
+	//XMoveResizeWindow(dpy, selmon->barwin, selmon->wx, selmon->by, selmon->ww, bh);
+	XMoveResizeWindow(dpy, selmon->barwin, selmon->wx + sp, selmon->by + vp, selmon->ww - 2 * sp, bh);
 	arrange(selmon);
 }
 
@@ -3099,9 +3182,12 @@ updatebars(void)
 		}
 
 		if (!m->barwin) {
-			m->barwin = XCreateWindow(dpy, root, m->wx, m->by, m->ww, bh, 0, DefaultDepth(dpy, screen),
-					CopyFromParent, DefaultVisual(dpy, screen),
-					CWOverrideRedirect|CWBackPixmap|CWEventMask, &wa);
+			//m->barwin = XCreateWindow(dpy, root, m->wx, m->by, m->ww, bh, 0, DefaultDepth(dpy, screen),
+			//		CopyFromParent, DefaultVisual(dpy, screen),
+			//		CWOverrideRedirect|CWBackPixmap|CWEventMask, &wa);
+			m->barwin = XCreateWindow(dpy, root, m->wx + sp, m->by + vp, m->ww - 2 * sp, bh, 0, DefaultDepth(dpy, screen),
+ 				CopyFromParent, DefaultVisual(dpy, screen),
+ 				CWOverrideRedirect|CWBackPixmap|CWEventMask, &wa);
 			XDefineCursor(dpy, m->barwin, cursor[CurNormal]->cursor);
 			XMapRaised(dpy, m->barwin);
 			XSelectInput(dpy, m->barwin, ButtonPressMask|PointerMotionMask);
@@ -3122,17 +3208,39 @@ updatebars(void)
 void
 updatebarpos(Monitor *m)
 {
+	int extragap = (m->mw == 1920 && m->mx == 1920) ? 10 : 0; /* only for HDMI monitor */
 	m->wy = m->my;
 	m->wh = m->mh;
 	if (m->showbar) {
-		m->wh -= bh;
-		m->by = m->topbar ? m->wy : m->wy + m->wh;
-		m->wy = m->topbar ? m->wy + bh : m->wy;
+		m->wh = m->wh - vertpad - bh;
+		m->by = m->topbar ? m->wy : m->wy + m->wh + vertpad;
+		m->wy = m->topbar ? m->wy + bh + vp + extragap : m->wy;
 	} else
-		m->by = -bh;
-
+		m->by = -bh - vp;
 	m->wh -= dh;
+	m->wh -= vp;
+	m->wh -= extragap;
 }
+
+//void
+//updatebarpos(Monitor *m)
+//{
+//	m->wy = m->my;
+//	m->wh = m->mh;
+//	if (m->showbar) {
+//		//m->wh -= bh;
+//		//m->by = m->topbar ? m->wy : m->wy + m->wh;
+//		//m->wy = m->topbar ? m->wy + bh : m->wy;
+//		m->wh = m->wh - vertpad - bh;
+//		m->by = m->topbar ? m->wy : m->wy + m->wh + vertpad;
+//		m->wy = m->topbar ? m->wy + bh + vp : m->wy;
+//	} else
+//		//m->by = -bh;
+//		m->by = -bh - vp;
+//
+//	m->wh -= dh;
+//	m->wh -= vp;
+//}
 
 void
 updateclientlist()
@@ -3308,7 +3416,8 @@ updatestatus(void)
 				text = s + 1;
 			}
 		}
-		statusw += TEXTW(text) - lrpad + 2;
+		//statusw += TEXTW(text) - lrpad + 2;
+		statusw += TEXTW(text);
 
 	}
 	//if (!gettextprop(root, XA_WM_NAME, stext, sizeof(stext))) {
