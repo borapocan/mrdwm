@@ -42,6 +42,7 @@
 #include <xcb/xcb.h>
 #ifdef XINERAMA
 #include <X11/extensions/Xinerama.h>
+#include <X11/extensions/Xrender.h>
 #endif /* XINERAMA */
 #include <X11/Xft/Xft.h>
 #include <X11/Xlib-xcb.h>
@@ -95,6 +96,15 @@ typedef struct {
 
 typedef struct Monitor Monitor;
 typedef struct Client Client;
+typedef struct Preview Preview;
+struct Preview {
+	XImage *orig_image;
+	XImage *scaled_image;
+	Window win;
+	unsigned int x, y;
+	Preview *next;
+};
+
 struct Client {
 	char name[256];
 	float mina, maxa;
@@ -112,6 +122,7 @@ struct Client {
 	Client *swallowing;
 	Monitor *mon;
 	Window win;
+	Preview pre;
 };
 
 typedef struct {
@@ -291,6 +302,10 @@ static int xerror(Display *dpy, XErrorEvent *ee);
 static int xerrordummy(Display *dpy, XErrorEvent *ee);
 static int xerrorstart(Display *dpy, XErrorEvent *ee);
 static void zoom(const Arg *arg);
+static void previewallwin();
+static void setpreviewwindowsizepositions(unsigned int n, Monitor *m, unsigned int gappo, unsigned int gappi);
+static XImage *getwindowximage(Client *c);
+static XImage *scaledownimage(XImage *orig_image, unsigned int cw, unsigned int ch);
 static void showtagpreview(unsigned int i);
 static void takepreview(void);
 static void previewtag(const Arg *arg);
@@ -1021,16 +1036,13 @@ dirtomon(int dir)
 void
 drawbar(Monitor *m)
 {
-	int x, w, tw = 0, n = 0, scm; //etwl = 0, etwr = 0, scm;
-	//int boxs = drw->fonts->h / 9;
+	int x, w, tw = 0, n = 0, scm;
 	int boxw = drw->fonts->h / 6 + 2;
 	unsigned int i, occ = 0, urg = 0;
 	Client *c;
-
 	if (!m->showbar)
 		return;
-
-	if (m == selmon) { /* status is only drawn on selected monitor */
+	if (m == selmon) {
 		char *text, *s, ch;
 		drw_setscheme(drw, scheme[SchemeStatus]);
 		tw = statusw;
@@ -1047,40 +1059,11 @@ drawbar(Monitor *m)
 			}
 		}
 		w = TEXTW(text);
-		//w = TEXTW(text) - lrpad + 2;
 		drw_text(drw, x, 0, w, bh, 0, text, 0);
 		tw = statusw;
 	}
-
-	/* draw status first so it can be overdrawn by tags later */
-	//if (m == selmon) { /* status is only drawn on selected monitor */
-	//	char *text, *s, ch;
-	//	//drw_setscheme(drw, scheme[SchemeNorm]);
-	//	drw_setscheme(drw, scheme[SchemeStatus]);
-	//	//tw = TEXTW(stext) - lrpad + 2; /* 2px right padding */
-	//	//drw_text(drw, m->ww - tw, 0, tw, bh, 0, stext, 0);
-	//	x = 0;
-	//	for (text = s = stext; *s; s++) {
-	//		if ((unsigned char)(*s) < ' ') {
-	//			ch = *s;
-	//			*s = '\0';
-	//			tw = TEXTW(text) - lrpad;
-	//			//drw_text(drw, m->ww - statusw + x, 0, tw, bh, 0, text, 0);
-	//			drw_text(drw, m->ww - sw - 2 * sp, 0, sw, bh, 0, stext, 0);
-	//			x += tw;
-	//			*s = ch;
-	//			text = s + 1;
-	//		}
-	//	}
-	//	tw = TEXTW(text) - lrpad + 2;
-	//	//drw_text(drw, m->ww - statusw + x, 0, tw, bh, 0, text, 0);
-	//	drw_text(drw, m->ww - sw - 2 * sp, 0, sw, bh, 0, stext, 0);
-	//	tw = statusw;
-	//}
-
 	for (c = m->clients; c; c = c->next) {
-		// prevent showing the panel as active application:
-	        if (ispanel(c))
+		if (ispanel(c))
 			continue;
 		if (ISVISIBLE(c))
 			n++;
@@ -1089,33 +1072,19 @@ drawbar(Monitor *m)
 			urg |= c->tags;
 	}
 	x = 0;
-	//w = m->btw = TEXTW(buttonbar);
-	//drw_setscheme(drw, scheme[SchemeNorm]);
-	//x = drw_text(drw, x, 0, w, bh, lrpad / 2, buttonbar, 0);
 	for (i = 0; i < LENGTH(tags); i++) {
 		w = TEXTW(tags[i]);
-		//drw_setscheme(drw, scheme[m->tagset[m->seltags] & 1 << i ? SchemeSel : SchemeNorm]);
 		drw_setscheme(drw, scheme[m->tagset[m->seltags] & 1 << i ? SchemeTagsSel : SchemeTagsNorm]);
 		drw_text(drw, x, 0, w, bh, lrpad / 2, tags[i], urg & 1 << i);
 		if (occ & 1 << i)
-			//drw_rect(drw, x + boxs, boxs, boxw, boxw, m == selmon && selmon->sel && selmon->sel->tags & 1 << i, urg & 1 << i);
-			drw_rect(drw, x + boxw, 0, w - ( 2 * boxw + 1), boxw, m == selmon && selmon->sel && selmon->sel->tags & 1 << i, urg & 1 << i);
+			drw_rect(drw, x + boxw, 0, w - (2 * boxw + 1), boxw, m->tagset[m->seltags] & 1 << i, urg & 1 << i);
 		x += w;
 	}
-
-
-
 	w = TEXTW(m->ltsymbol);
-	//drw_setscheme(drw, scheme[SchemeNorm]);
 	drw_setscheme(drw, scheme[SchemeTagsNorm]);
-	x = drw_text(drw, x, 0, w, bh, lrpad / 2, m->ltsymbol, 0);
-
+	x = drw_text(drw, x, 0, w + 1, bh, lrpad / 2, m->ltsymbol, 0);
+	int title_x = x;
 	if ((w = m->ww - tw - x) > bh) {
-		//if (m->sel) {
-		//	drw_setscheme(drw, scheme[m == selmon ? SchemeSel : SchemeNorm]);
-		//	drw_text(drw, x, 0, w, bh, lrpad / 2, m->sel->name, 0);
-		//	if (m->sel->isfloating)
-		//		drw_rect(drw, x + boxs, boxs, boxw, boxw, m->sel->isfixed, 0);
 		if (n > 0) {
 			int remainder = w % n;
 			int tabw = (1.0 / (double)n) * w + 1;
@@ -1126,77 +1095,340 @@ drawbar(Monitor *m)
 					continue;
 				if (m->hov == c)
 					scm = SchemeHov;
-				else if (m->sel == c)
+				else if (m->sel == c && m->hov == NULL)
 					scm = SchemeSel;
 				else if (HIDDEN(c))
 					scm = SchemeHid;
 				else
 					scm = SchemeNorm;
 				drw_setscheme(drw, scheme[scm]);
-
 				if (remainder >= 0) {
-					if (remainder == 0) {
+					if (remainder == 0)
 						tabw--;
-					}
 					remainder--;
 				}
-				//drw_text(drw, x, 0, tabw, bh, lrpad / 2, c->name, 0);
-				//drw_text(drw, x, 0, tabw, bh, lrpad / 2 + (m->sel->icon ? m->sel->icw + ICONSPACING : 0), m->sel->name, 0);
-				//drw_text(drw, x, 0, tabw, bh, lrpad / 2 + (c->icon ? c->icw + ICONSPACING : 0), c->name, 0);
 				drw_text(drw, x, 0, tabw - 1, bh, lrpad / 2 + (c->icon ? c->icw + ICONSPACING : 0), c->name, 0);
 				if (c->icon)
 					drw_pic(drw, x + lrpad / 2, (bh - c->ich) / 2, c->icw, c->ich, c->icon);
 				XSetForeground(dpy, drw->gc, 0xFFFFFF);
 				XDrawLine(dpy, drw->drawable, drw->gc, x, 0, x, bh);
 				XDrawLine(dpy, drw->drawable, drw->gc, x + tabw - 1, 0, x + tabw - 1, bh);
-
-				//if (m->sel->icon)
-				//	drw_pic(drw, x + lrpad / 2, (bh - m->sel->ich) / 2, m->sel->icw, m->sel->ich, m->sel->icon);
 				x += tabw;
 			}
 		} else {
-			drw_setscheme(drw, scheme[SchemeInfoNorm]);
-			drw_rect(drw, x, 0, w - 2 * sp, bh, 1, 1);
-			XSetForeground(dpy, drw->gc, 0xFFFFFF);
-			XDrawLine(dpy, drw->drawable, drw->gc, x, 0, x, bh);
-			//XDrawLine(dpy, drw->drawable, drw->gc, x + w - 2 * sp - 1, 0, x + w - 2 * sp - 1, bh);
-			XDrawLine(dpy, drw->drawable, drw->gc, x + w - 1, 0, x + w - 1, bh);
-			//drw_setscheme(drw, scheme[SchemeNorm]);
-			//drw_setscheme(drw, scheme[SchemeInfoNorm]);
-			//drw_rect(drw, x, 0, w, bh, 1, 1);
-			//drw_rect(drw, x, 0, w - 2 * sp, bh, 1, 1);
+			drw_setscheme(drw, scheme[SchemeSel]);
+			drw_rect(drw, x, 0, w, bh, 1, 1);
 		}
 	}
+	/* draw white line right of layout symbol */
+	XSetForeground(dpy, drw->gc, 0xFFFFFF);
+	XDrawLine(dpy, drw->drawable, drw->gc, title_x, 0, title_x, bh);
+	/* draw white line left of dwmblocks only on selected monitor */
+	if (m == selmon)
+		XDrawLine(dpy, drw->drawable, drw->gc, m->ww - statusw, 0, m->ww - statusw, bh);
 	m->bt = n;
 	m->btw = w;
 	drw_map(drw, m->barwin, 0, 0, m->ww, bh);
-
-	//char *docktext = "again";
-
-	//if (m == selmon) { /* extra status is only drawn on selected monitor */
-	//	//rstext = strdup(docktext);
-	//	//if (splitstatus) {
-	//	//	mstext = strsep(&rstext, splitdelim);
-	//	//	msx = (m->ww - TEXTW(mstext) + lrpad) / 2;
-	//	//}
-	//	drw_setscheme(drw, scheme[SchemeNorm]);
-	//	/* clear default bar draw buffer by drawing a blank rectangle */
-	//	drw_rect(drw, 0, 0, m->ww, dh, 1, 1);
-
-	//	int buttonl = TEXTW(buttonbar);
-	//	drw_text(drw, 0, 0, buttonl, dh, 0, buttonbar, 0);
-
-	//	int etwl = TEXTW("hello") - lrpad + 2;
-	//	drw_text(drw, buttonl, 0, etwl, dh, 0, "hello", 0);
-
-	//	int etwm = TEXTW("hello") - lrpad + 2; /* 2px right padding */
-	//	drw_text(drw, (m->ww - etwm + lrpad) / 2, 0, etwm, dh, 0, "world", 0);
-
-	//	int etwr = TEXTW("again") - lrpad + 2;
-	//	drw_text(drw, m->ww - etwm, 0, etwr, dh, 0, docktext, 0);
-	//	drw_map(drw, m->dockwin, 0, 0, m->ww, dh);
-	//}
 }
+
+//void
+//drawbar(Monitor *m)
+//{
+//	int x, w, tw = 0, n = 0, scm;
+//	int boxw = drw->fonts->h / 6 + 2;
+//	unsigned int i, occ = 0, urg = 0;
+//	Client *c;
+//
+//	if (!m->showbar)
+//		return;
+//
+//	if (m == selmon) {
+//		char *text, *s, ch;
+//		drw_setscheme(drw, scheme[SchemeStatus]);
+//		tw = statusw;
+//		x = m->ww - statusw;
+//		for (text = s = stext; *s; s++) {
+//			if ((unsigned char)(*s) < ' ') {
+//				ch = *s;
+//				*s = '\0';
+//				w = TEXTW(text) - lrpad;
+//				drw_text(drw, x, 0, w, bh, 0, text, 0);
+//				x += w;
+//				*s = ch;
+//				text = s + 1;
+//			}
+//		}
+//		w = TEXTW(text);
+//		drw_text(drw, x, 0, w, bh, 0, text, 0);
+//		tw = statusw;
+//	}
+//
+//	for (c = m->clients; c; c = c->next) {
+//		if (ispanel(c))
+//			continue;
+//		if (ISVISIBLE(c))
+//			n++;
+//		occ |= c->tags;
+//		if (c->isurgent)
+//			urg |= c->tags;
+//	}
+//	x = 0;
+//	for (i = 0; i < LENGTH(tags); i++) {
+//		w = TEXTW(tags[i]);
+//		drw_setscheme(drw, scheme[m->tagset[m->seltags] & 1 << i ? SchemeTagsSel : SchemeTagsNorm]);
+//		drw_text(drw, x, 0, w, bh, lrpad / 2, tags[i], urg & 1 << i);
+//		if (occ & 1 << i)
+//			drw_rect(drw, x + boxw, 0, w - (2 * boxw + 1), boxw, m->tagset[m->seltags] & 1 << i, urg & 1 << i);
+//		x += w;
+//	}
+//
+//	w = TEXTW(m->ltsymbol);
+//	drw_setscheme(drw, scheme[SchemeTagsNorm]);
+//	x = drw_text(drw, x, 0, w + 1, bh, lrpad / 2, m->ltsymbol, 0);
+//
+//	if ((w = m->ww - tw - x) > bh) {
+//		if (n > 0) {
+//			int remainder = w % n;
+//			int tabw = (1.0 / (double)n) * w + 1;
+//			for (c = m->clients; c; c = c->next) {
+//				if (ispanel(c))
+//					continue;
+//				if (!ISVISIBLE(c))
+//					continue;
+//				if (m->hov == c)
+//					scm = SchemeHov;
+//				else if (m->sel == c && m->hov == NULL)
+//					scm = SchemeSel;
+//				else if (HIDDEN(c))
+//					scm = SchemeHid;
+//				else
+//					scm = SchemeNorm;
+//				drw_setscheme(drw, scheme[scm]);
+//				if (remainder >= 0) {
+//					if (remainder == 0)
+//						tabw--;
+//					remainder--;
+//				}
+//				drw_text(drw, x, 0, tabw - 1, bh, lrpad / 2 + (c->icon ? c->icw + ICONSPACING : 0), c->name, 0);
+//				if (c->icon)
+//					drw_pic(drw, x + lrpad / 2, (bh - c->ich) / 2, c->icw, c->ich, c->icon);
+//				XSetForeground(dpy, drw->gc, 0xFFFFFF);
+//				/* left border */
+//				XDrawLine(dpy, drw->drawable, drw->gc, x, 0, x, bh);
+//				/* right border */
+//				{
+//					Client *next = c->next;
+//					while (next && (!ISVISIBLE(next) || ispanel(next)))
+//						next = next->next;
+//					if (next)
+//						XDrawLine(dpy, drw->drawable, drw->gc, x + tabw - 1, 0, x + tabw - 1, bh);
+//					else
+//						XDrawLine(dpy, drw->drawable, drw->gc, m->ww - tw, 0, m->ww - tw, bh);
+//				}
+//				x += tabw;
+//			}
+//		} else {
+//			drw_setscheme(drw, scheme[SchemeInfoNorm]);
+//			drw_rect(drw, x, 0, w - 2 * sp, bh, 1, 1);
+//			XSetForeground(dpy, drw->gc, 0xFFFFFF);
+//			XDrawLine(dpy, drw->drawable, drw->gc, x, 0, x, bh);
+//			XDrawLine(dpy, drw->drawable, drw->gc, m->ww - tw, 0, m->ww - tw, bh);
+//		}
+//	}
+//	m->bt = n;
+//	m->btw = w;
+//	drw_map(drw, m->barwin, 0, 0, m->ww, bh);
+//}
+
+//void
+//drawbar(Monitor *m)
+//{
+//	int x, w, tw = 0, n = 0, scm; //etwl = 0, etwr = 0, scm;
+//	//int boxs = drw->fonts->h / 9;
+//	int boxw = drw->fonts->h / 6 + 2;
+//	unsigned int i, occ = 0, urg = 0;
+//	Client *c;
+//
+//	if (!m->showbar)
+//		return;
+//
+//	if (m == selmon) { /* status is only drawn on selected monitor */
+//		char *text, *s, ch;
+//		drw_setscheme(drw, scheme[SchemeStatus]);
+//		tw = statusw;
+//		x = m->ww - statusw;
+//		for (text = s = stext; *s; s++) {
+//			if ((unsigned char)(*s) < ' ') {
+//				ch = *s;
+//				*s = '\0';
+//				w = TEXTW(text) - lrpad;
+//				drw_text(drw, x, 0, w, bh, 0, text, 0);
+//				x += w;
+//				*s = ch;
+//				text = s + 1;
+//			}
+//		}
+//		w = TEXTW(text);
+//		//w = TEXTW(text) - lrpad + 2;
+//		drw_text(drw, x, 0, w, bh, 0, text, 0);
+//		tw = statusw;
+//	}
+//
+//	/* draw status first so it can be overdrawn by tags later */
+//	//if (m == selmon) { /* status is only drawn on selected monitor */
+//	//	char *text, *s, ch;
+//	//	//drw_setscheme(drw, scheme[SchemeNorm]);
+//	//	drw_setscheme(drw, scheme[SchemeStatus]);
+//	//	//tw = TEXTW(stext) - lrpad + 2; /* 2px right padding */
+//	//	//drw_text(drw, m->ww - tw, 0, tw, bh, 0, stext, 0);
+//	//	x = 0;
+//	//	for (text = s = stext; *s; s++) {
+//	//		if ((unsigned char)(*s) < ' ') {
+//	//			ch = *s;
+//	//			*s = '\0';
+//	//			tw = TEXTW(text) - lrpad;
+//	//			//drw_text(drw, m->ww - statusw + x, 0, tw, bh, 0, text, 0);
+//	//			drw_text(drw, m->ww - sw - 2 * sp, 0, sw, bh, 0, stext, 0);
+//	//			x += tw;
+//	//			*s = ch;
+//	//			text = s + 1;
+//	//		}
+//	//	}
+//	//	tw = TEXTW(text) - lrpad + 2;
+//	//	//drw_text(drw, m->ww - statusw + x, 0, tw, bh, 0, text, 0);
+//	//	drw_text(drw, m->ww - sw - 2 * sp, 0, sw, bh, 0, stext, 0);
+//	//	tw = statusw;
+//	//}
+//
+//	for (c = m->clients; c; c = c->next) {
+//		// prevent showing the panel as active application:
+//	        if (ispanel(c))
+//			continue;
+//		if (ISVISIBLE(c))
+//			n++;
+//		occ |= c->tags;
+//		if (c->isurgent)
+//			urg |= c->tags;
+//	}
+//	x = 0;
+//	//w = m->btw = TEXTW(buttonbar);
+//	//drw_setscheme(drw, scheme[SchemeNorm]);
+//	//x = drw_text(drw, x, 0, w, bh, lrpad / 2, buttonbar, 0);
+//	for (i = 0; i < LENGTH(tags); i++) {
+//		w = TEXTW(tags[i]);
+//		//drw_setscheme(drw, scheme[m->tagset[m->seltags] & 1 << i ? SchemeSel : SchemeNorm]);
+//		drw_setscheme(drw, scheme[m->tagset[m->seltags] & 1 << i ? SchemeTagsSel : SchemeTagsNorm]);
+//		drw_text(drw, x, 0, w, bh, lrpad / 2, tags[i], urg & 1 << i);
+//		if (occ & 1 << i)
+//			//drw_rect(drw, x + boxs, boxs, boxw, boxw, m == selmon && selmon->sel && selmon->sel->tags & 1 << i, urg & 1 << i);
+//			drw_rect(drw, x + boxw, 0, w - ( 2 * boxw + 1), boxw, m == selmon && selmon->sel && selmon->sel->tags & 1 << i, urg & 1 << i);
+//		x += w;
+//	}
+//
+//
+//
+//	w = TEXTW(m->ltsymbol);
+//	//drw_setscheme(drw, scheme[SchemeNorm]);
+//	drw_setscheme(drw, scheme[SchemeTagsNorm]);
+//	x = drw_text(drw, x, 0, w, bh, lrpad / 2, m->ltsymbol, 0);
+//
+//	if ((w = m->ww - tw - x) > bh) {
+//		//if (m->sel) {
+//		//	drw_setscheme(drw, scheme[m == selmon ? SchemeSel : SchemeNorm]);
+//		//	drw_text(drw, x, 0, w, bh, lrpad / 2, m->sel->name, 0);
+//		//	if (m->sel->isfloating)
+//		//		drw_rect(drw, x + boxs, boxs, boxw, boxw, m->sel->isfixed, 0);
+//		if (n > 0) {
+//			int remainder = w % n;
+//			int tabw = (1.0 / (double)n) * w + 1;
+//			for (c = m->clients; c; c = c->next) {
+//				if (ispanel(c))
+//					continue;
+//				if (!ISVISIBLE(c))
+//					continue;
+//				if (m->hov == c)
+//					scm = SchemeHov;
+//				else if (m->sel == c && m->hov == NULL)
+//					scm = SchemeSel;
+//				else if (HIDDEN(c))
+//					scm = SchemeHid;
+//				else
+//					scm = SchemeNorm;
+//				drw_setscheme(drw, scheme[scm]);
+//
+//				if (remainder >= 0) {
+//					if (remainder == 0) {
+//						tabw--;
+//					}
+//					remainder--;
+//				}
+//				//drw_text(drw, x, 0, tabw, bh, lrpad / 2, c->name, 0);
+//				//drw_text(drw, x, 0, tabw, bh, lrpad / 2 + (m->sel->icon ? m->sel->icw + ICONSPACING : 0), m->sel->name, 0);
+//				//drw_text(drw, x, 0, tabw, bh, lrpad / 2 + (c->icon ? c->icw + ICONSPACING : 0), c->name, 0);
+//				drw_text(drw, x, 0, tabw - 1, bh, lrpad / 2 + (c->icon ? c->icw + ICONSPACING : 0), c->name, 0);
+//				if (c->icon)
+//					drw_pic(drw, x + lrpad / 2, (bh - c->ich) / 2, c->icw, c->ich, c->icon);
+//				XSetForeground(dpy, drw->gc, 0xFFFFFF);
+//				/* for last visible client draw line at exact end of title area */
+//				{
+//					Client *next = c->next;
+//					while (next && (!ISVISIBLE(next) || ispanel(next)))
+//						next = next->next;
+//					if (next)
+//						XDrawLine(dpy, drw->drawable, drw->gc, x + tabw - 1, 0, x + tabw - 1, bh);
+//					else
+//						XDrawLine(dpy, drw->drawable, drw->gc, m->ww - tw - 1, 0, m->ww - tw - 1, bh);
+//				}
+//				//XDrawLine(dpy, drw->drawable, drw->gc, x, 0, x, bh);
+//				XDrawLine(dpy, drw->drawable, drw->gc, x + tabw - 1, 0, x + tabw - 1, bh);
+//
+//				//if (m->sel->icon)
+//				//	drw_pic(drw, x + lrpad / 2, (bh - m->sel->ich) / 2, m->sel->icw, m->sel->ich, m->sel->icon);
+//				x += tabw;
+//			}
+//		} else {
+//			drw_setscheme(drw, scheme[SchemeInfoNorm]);
+//			drw_rect(drw, x, 0, w - 2 * sp, bh, 1, 1);
+//			XSetForeground(dpy, drw->gc, 0xFFFFFF);
+//			XDrawLine(dpy, drw->drawable, drw->gc, x, 0, x, bh);
+//			//XDrawLine(dpy, drw->drawable, drw->gc, x + w - 2 * sp - 1, 0, x + w - 2 * sp - 1, bh);
+//			XDrawLine(dpy, drw->drawable, drw->gc, x + w - 1, 0, x + w - 1, bh);
+//			//drw_setscheme(drw, scheme[SchemeNorm]);
+//			//drw_setscheme(drw, scheme[SchemeInfoNorm]);
+//			//drw_rect(drw, x, 0, w, bh, 1, 1);
+//			//drw_rect(drw, x, 0, w - 2 * sp, bh, 1, 1);
+//		}
+//	}
+//	m->bt = n;
+//	m->btw = w;
+//	drw_map(drw, m->barwin, 0, 0, m->ww, bh);
+//
+//	//char *docktext = "again";
+//
+//	//if (m == selmon) { /* extra status is only drawn on selected monitor */
+//	//	//rstext = strdup(docktext);
+//	//	//if (splitstatus) {
+//	//	//	mstext = strsep(&rstext, splitdelim);
+//	//	//	msx = (m->ww - TEXTW(mstext) + lrpad) / 2;
+//	//	//}
+//	//	drw_setscheme(drw, scheme[SchemeNorm]);
+//	//	/* clear default bar draw buffer by drawing a blank rectangle */
+//	//	drw_rect(drw, 0, 0, m->ww, dh, 1, 1);
+//
+//	//	int buttonl = TEXTW(buttonbar);
+//	//	drw_text(drw, 0, 0, buttonl, dh, 0, buttonbar, 0);
+//
+//	//	int etwl = TEXTW("hello") - lrpad + 2;
+//	//	drw_text(drw, buttonl, 0, etwl, dh, 0, "hello", 0);
+//
+//	//	int etwm = TEXTW("hello") - lrpad + 2; /* 2px right padding */
+//	//	drw_text(drw, (m->ww - etwm + lrpad) / 2, 0, etwm, dh, 0, "world", 0);
+//
+//	//	int etwr = TEXTW("again") - lrpad + 2;
+//	//	drw_text(drw, m->ww - etwm, 0, etwr, dh, 0, docktext, 0);
+//	//	drw_map(drw, m->dockwin, 0, 0, m->ww, dh);
+//	//}
+//}
 
 void
 drawbars(void)
@@ -1723,7 +1955,11 @@ hidewin(Client *c) {
 
 int
 ispanel(Client *c) {
-    return !strcmp(c->name, panel[0]);
+	for (int i = 0; i < LENGTH(panel); i++)
+		if (!strcmp(c->name, panel[i]))
+			return 1;
+	return 0;
+    //return !strcmp(c->name, panel[0]);
 }
 
 void
@@ -2039,6 +2275,8 @@ motionnotify(XEvent *e)
 						XSetWindowBorder(dpy, selmon->hov->win, scheme[SchemeSel][ColBorder].pixel);
 				}
 				selmon->hov = c;
+				focus(c);
+				restack(selmon);
 				XSetWindowBorder(dpy, c->win, scheme[SchemeHov][ColBorder].pixel);
 			}
 		}
@@ -2559,6 +2797,7 @@ showtagpreview(unsigned int i)
 			selmon->mw / scalepreview, selmon->mh / scalepreview,
 			0, 0);
 	XSync(dpy, False);
+	XMoveWindow(dpy, selmon->tagwin, selmon->wx, selmon->wy);
 	XMapRaised(dpy, selmon->tagwin);
 }
 
@@ -2569,21 +2808,30 @@ takepreview(void)
 	Imlib_Image image;
 	unsigned int occ = 0, i;
 
-	for (c = selmon->clients; c; c = c->next)
+	for (c = selmon->clients; c; c = c->next) {
+		if (ispanel(c))
+			continue;
 		occ |= c->tags;
-		//occ |= c->tags == 255 ? 0 : c->tags; /* hide vacants */
-
+	}
 	for (i = 0; i < LENGTH(tags); i++) {
-		/* searching for tags that are occupied && selected */
-		if (!(occ & 1 << i) || !(selmon->tagset[selmon->seltags] & 1 << i))
+		/* clear stale previews for unoccupied tags */
+		if (!(occ & 1 << i)) {
+			if (selmon->tagmap[i]) {
+				XFreePixmap(dpy, selmon->tagmap[i]);
+				selmon->tagmap[i] = 0;
+			}
+			continue;
+		}
+
+		/* only update currently selected tag */
+		if (!(selmon->tagset[selmon->seltags] & 1 << i))
 			continue;
 
-		if (selmon->tagmap[i]) { /* tagmap exist, clean it */
+		if (selmon->tagmap[i]) {
 			XFreePixmap(dpy, selmon->tagmap[i]);
 			selmon->tagmap[i] = 0;
 		}
 
-		/* try to unmap the window so it doesn't show the preview on the preview */
 		selmon->previewshow = 0;
 		XUnmapWindow(dpy, selmon->tagwin);
 		XSync(dpy, False);
@@ -2594,23 +2842,68 @@ takepreview(void)
 		}
 		imlib_context_set_image(image);
 		imlib_context_set_display(dpy);
-		/* uncomment if using alpha patch */
-		//imlib_image_set_has_alpha(1);
-		//imlib_context_set_blend(0);
-		//imlib_context_set_visual(visual);
 		imlib_context_set_visual(DefaultVisual(dpy, screen));
 		imlib_context_set_drawable(root);
-
-		if (previewbar)
-			imlib_copy_drawable_to_image(0, selmon->wx, selmon->wy, selmon->ww, selmon->wh, 0, 0, 1);
-		else
-			imlib_copy_drawable_to_image(0, selmon->mx, selmon->my, selmon->mw ,selmon->mh, 0, 0, 1);
+		imlib_copy_drawable_to_image(0, selmon->mx, selmon->my, selmon->mw, selmon->mh, 0, 0, 1);
 		selmon->tagmap[i] = XCreatePixmap(dpy, selmon->tagwin, selmon->mw / scalepreview, selmon->mh / scalepreview, DefaultDepth(dpy, screen));
 		imlib_context_set_drawable(selmon->tagmap[i]);
 		imlib_render_image_part_on_drawable_at_size(0, 0, selmon->mw, selmon->mh, 0, 0, selmon->mw / scalepreview, selmon->mh / scalepreview);
 		imlib_free_image();
 	}
 }
+
+//void
+//takepreview(void)
+//{
+//	Client *c;
+//	Imlib_Image image;
+//	unsigned int occ = 0, i;
+//
+//	for (c = selmon->clients; c; c = c->next)
+//		occ |= c->tags;
+//		//occ |= c->tags == 255 ? 0 : c->tags; /* hide vacants */
+//
+//	for (i = 0; i < LENGTH(tags); i++) {
+//		/* searching for tags that are occupied && selected */
+//		if (!(occ & 1 << i) || !(selmon->tagset[selmon->seltags] & 1 << i))
+//			continue;
+//
+//		if (selmon->tagmap[i]) { /* tagmap exist, clean it */
+//			XFreePixmap(dpy, selmon->tagmap[i]);
+//			selmon->tagmap[i] = 0;
+//		}
+//
+//		/* try to unmap the window so it doesn't show the preview on the preview */
+//		selmon->previewshow = 0;
+//		XUnmapWindow(dpy, selmon->tagwin);
+//		XSync(dpy, False);
+//
+//		if (!(image = imlib_create_image(sw, sh))) {
+//			fprintf(stderr, "dwm: imlib: failed to create image, skipping.");
+//			continue;
+//		}
+//		imlib_context_set_image(image);
+//		imlib_context_set_display(dpy);
+//		/* uncomment if using alpha patch */
+//		//imlib_image_set_has_alpha(1);
+//		//imlib_context_set_blend(0);
+//		//imlib_context_set_visual(visual);
+//		imlib_context_set_visual(DefaultVisual(dpy, screen));
+//		imlib_context_set_drawable(root);
+//
+//		imlib_copy_drawable_to_image(0, selmon->mx, selmon->my, selmon->mw, selmon->mh, 0, 0, 1);
+//		//if (previewbar)
+//		//	imlib_copy_drawable_to_image(0, selmon->wx, selmon->wy, selmon->ww, selmon->wh, 0, 0, 1);
+//		//else
+//		//	imlib_copy_drawable_to_image(0, selmon->mx, selmon->my, selmon->mw ,selmon->mh, 0, 0, 1);
+//
+//
+//		selmon->tagmap[i] = XCreatePixmap(dpy, selmon->tagwin, selmon->mw / scalepreview, selmon->mh / scalepreview, DefaultDepth(dpy, screen));
+//		imlib_context_set_drawable(selmon->tagmap[i]);
+//		imlib_render_image_part_on_drawable_at_size(0, 0, selmon->mw, selmon->mh, 0, 0, selmon->mw / scalepreview, selmon->mh / scalepreview);
+//		imlib_free_image();
+//	}
+//}
 
 void
 previewtag(const Arg *arg)
@@ -2685,8 +2978,8 @@ setup(void)
 	for (i = 0; i < LENGTH(colors); i++)
 		scheme[i] = drw_scm_create(drw, colors[i], 3);
 	/* init bars */
-	updatebars();
 	updatestatus();
+	updatebars();
 	updatebarpos(selmon);
 	/* supporting window for NetWMCheck */
 	wmcheckwin = XCreateSimpleWindow(dpy, root, 0, 0, 1, 1, 0, 0, 0);
@@ -3055,21 +3348,41 @@ void
 togglewin(const Arg *arg)
 {
 	Client *c = (Client*)arg->v;
-
 	if (!c)
 		return;
-
-	if (c == selmon->sel) {
+	if (HIDDEN(c)) {
+		showwin(c);
+		focus(c);
+		restack(selmon);
+	} else if (c == selmon->sel) {
 		hidewin(c);
 		focus(NULL);
 		arrange(c->mon);
 	} else {
-		if (HIDDEN(c))
-			showwin(c);
 		focus(c);
 		restack(selmon);
 	}
 }
+
+//void
+//togglewin(const Arg *arg)
+//{
+//	Client *c = (Client*)arg->v;
+//
+//	if (!c)
+//		return;
+//
+//	if (c == selmon->sel) {
+//		hidewin(c);
+//		focus(NULL);
+//		arrange(c->mon);
+//	} else {
+//		if (HIDDEN(c))
+//			showwin(c);
+//		focus(c);
+//		restack(selmon);
+//	}
+//}
 
 void
 freeicon(Client *c)
@@ -3132,6 +3445,21 @@ unmanage(Client *c, int destroyed)
 	//focus(NULL);
 	//updateclientlist();
 	//arrange(m);
+	{
+                unsigned int occ = 0, i;
+                Client *cl;
+                for (cl = selmon->clients; cl; cl = cl->next) {
+                        if (ispanel(cl))
+                                continue;
+                        occ |= cl->tags;
+                }
+                for (i = 0; i < LENGTH(tags); i++) {
+                        if (!(occ & 1 << i) && selmon->tagmap[i]) {
+                                XFreePixmap(dpy, selmon->tagmap[i]);
+                                selmon->tagmap[i] = 0;
+                        }
+                }
+        }
 	if (!s) {
 		arrange(m);
 		focus(NULL);
@@ -3174,7 +3502,7 @@ updatebars(void)
 	XClassHint ch = {"dwm"};
 	for (m = mons; m; m = m->next) {
 		if (!m->tagwin) {
-			m->tagwin = XCreateWindow(dpy, root, m->wx, m->by + bh, m->mw / scalepreview,
+			m->tagwin = XCreateWindow(dpy, root, m->wx, m->wy, m->mw / scalepreview,
 			m->mh / scalepreview, 0, DefaultDepth(dpy, screen), CopyFromParent,
 			DefaultVisual(dpy, screen), CWOverrideRedirect|CWBackPixmap|CWEventMask, &wa);
 			XDefineCursor(dpy, m->tagwin, cursor[CurNormal]->cursor);
@@ -3704,6 +4032,451 @@ zoom(const Arg *arg)
 	if (c == nexttiled(selmon->clients) && !(c = nexttiled(c->next)))
 		return;
 	pop(c);
+}
+
+//void
+//previewallwin(){
+//	FILE *log = fopen("/tmp/previewallwin.log", "w");
+//	fprintf(log, "previewallwin called\n");
+//	fclose(log);
+//	Monitor *m = selmon;
+//	Client *c, *focus_c = NULL;
+//	unsigned int n;
+//	for (n = 0, c = m->clients; c; c = c->next){
+//		if (ispanel(c))
+//			continue;
+//		n++;
+//#ifdef ACTUALFULLSCREEN
+//		if (c->isfullscreen)
+//			togglefullscr(&(Arg){0});
+//#endif
+//#ifdef AWESOMEBAR
+//		if (HIDDEN(c))
+//			continue;
+//#endif
+//		c->pre.orig_image = getwindowximage(c);
+//	}
+//	if (n == 0)
+//		return;
+//	setpreviewwindowsizepositions(n, m, 60, 15);
+//	XEvent event;
+//	for(c = m->clients; c; c = c->next){
+//		if (ispanel(c))
+//			continue;
+//		if (!c->pre.win)
+//			c->pre.win = XCreateSimpleWindow(dpy, root, c->pre.x, c->pre.y, c->pre.scaled_image->width, c->pre.scaled_image->height, 1, BlackPixel(dpy, screen), WhitePixel(dpy, screen));
+//		else
+//			XMoveResizeWindow(dpy, c->pre.win, c->pre.x, c->pre.y, c->pre.scaled_image->width, c->pre.scaled_image->height);
+//		XSetWindowBorder(dpy, c->pre.win, scheme[SchemeNorm][ColBorder].pixel);
+//		XUnmapWindow(dpy, c->win);
+//		if (c->pre.win){
+//			XSelectInput(dpy, c->pre.win, ButtonPress | EnterWindowMask | LeaveWindowMask );
+//			XMapWindow(dpy, c->pre.win);
+//			GC gc = XCreateGC(dpy, c->pre.win, 0, NULL);
+//			XPutImage(dpy, c->pre.win, gc, c->pre.scaled_image, 0, 0, 0, 0, c->pre.scaled_image->width, c->pre.scaled_image->height);
+//		}
+//	}
+//	while (1) {
+//		XNextEvent(dpy, &event);
+//		if (event.type == ButtonPress)
+//			if (event.xbutton.button == Button1){
+//				for(c = m->clients; c; c = c->next){
+//					XUnmapWindow(dpy, c->pre.win);
+//					if (event.xbutton.window == c->pre.win){
+//						selmon->seltags ^= 1; /* toggle sel tagset */
+//						m->tagset[selmon->seltags] = c->tags;
+//						focus_c = c;
+//						focus(NULL);
+//#ifdef AWESOMEBAR
+//						if (HIDDEN(c)){
+//							showwin(c);
+//							continue;
+//						}
+//#endif
+//					}
+//					/* If you hit awesomebar patch Unlock the notes below;
+//					 * And you should add the following line to "hidewin" Function
+//					 * c->pre.orig_image = getwindowximage(c);
+//					 * */
+//#ifdef AWESOMEBAR
+//					if (HIDDEN(c)){
+//						continue;
+//					}
+//#endif
+//					XMapWindow(dpy, c->win);
+//					XDestroyImage(c->pre.orig_image);
+//					XDestroyImage(c->pre.scaled_image);
+//				}
+//				break;
+//			}
+//		if (event.type == EnterNotify)
+//			for(c = m->clients; c; c = c->next)
+//				if (event.xcrossing.window == c->pre.win){
+//					XSetWindowBorder(dpy, c->pre.win, scheme[SchemeSel][ColBorder].pixel);
+//					break;
+//				}
+//		if (event.type == LeaveNotify)
+//			for(c = m->clients; c; c = c->next)
+//				if (event.xcrossing.window == c->pre.win){
+//					XSetWindowBorder(dpy, c->pre.win, scheme[SchemeNorm][ColBorder].pixel);
+//					break;
+//				}
+//	}
+//	arrange(m);
+//	focus(focus_c);
+//}
+
+void
+previewallwin(){
+	Monitor *m = selmon;
+	Client *c, *focus_c = NULL;
+	unsigned int n;
+	for (n = 0, c = m->clients; c; c = c->next){
+		if (ispanel(c))
+			continue;
+		n++;
+		c->pre.orig_image = getwindowximage(c);
+	}
+	if (n == 0)
+		return;
+	setpreviewwindowsizepositions(n, m, 60, 15);
+	XEvent event;
+	for(c = m->clients; c; c = c->next){
+		if (ispanel(c))
+			continue;
+		if (!c->pre.win)
+			c->pre.win = XCreateSimpleWindow(dpy, root, c->pre.x, c->pre.y, c->pre.scaled_image->width, c->pre.scaled_image->height, 1, BlackPixel(dpy, screen), WhitePixel(dpy, screen));
+		else
+			XMoveResizeWindow(dpy, c->pre.win, c->pre.x, c->pre.y, c->pre.scaled_image->width, c->pre.scaled_image->height);
+		XSetWindowBorder(dpy, c->pre.win, scheme[SchemeNorm][ColBorder].pixel);
+		XUnmapWindow(dpy, c->win);
+		if (c->pre.win){
+			XSelectInput(dpy, c->pre.win, ButtonPress | EnterWindowMask | LeaveWindowMask);
+			XMapWindow(dpy, c->pre.win);
+			GC gc = XCreateGC(dpy, c->pre.win, 0, NULL);
+			XPutImage(dpy, c->pre.win, gc, c->pre.scaled_image, 0, 0, 0, 0, c->pre.scaled_image->width, c->pre.scaled_image->height);
+		}
+	}
+	/* raise panel above preview windows */
+	for(c = m->clients; c; c = c->next)
+		if (ispanel(c)) {
+			XMapWindow(dpy, c->win);
+			XRaiseWindow(dpy, c->win);
+		}
+	while (1) {
+		XNextEvent(dpy, &event);
+		if (event.type == ButtonPress)
+			if (event.xbutton.button == Button1){
+				for(c = m->clients; c; c = c->next){
+					if (ispanel(c))
+						continue;
+					XUnmapWindow(dpy, c->pre.win);
+					if (event.xbutton.window == c->pre.win){
+						selmon->seltags ^= 1;
+						m->tagset[selmon->seltags] = c->tags;
+						focus_c = c;
+						focus(NULL);
+					}
+					XMapWindow(dpy, c->win);
+					XDestroyImage(c->pre.orig_image);
+					XDestroyImage(c->pre.scaled_image);
+				}
+				break;
+			}
+		if (event.type == EnterNotify)
+			for(c = m->clients; c; c = c->next){
+				if (ispanel(c))
+					continue;
+				if (event.xcrossing.window == c->pre.win){
+					XSetWindowBorder(dpy, c->pre.win, scheme[SchemeSel][ColBorder].pixel);
+					break;
+				}
+			}
+		if (event.type == LeaveNotify)
+			for(c = m->clients; c; c = c->next){
+				if (ispanel(c))
+					continue;
+				if (event.xcrossing.window == c->pre.win){
+					XSetWindowBorder(dpy, c->pre.win, scheme[SchemeNorm][ColBorder].pixel);
+					break;
+				}
+			}
+	}
+	arrange(m);
+	focus(focus_c);
+}
+
+//void
+//previewallwin(){
+//	Monitor *m = selmon;
+//	Client *c, *focus_c = NULL;
+//	unsigned int n;
+//	for (n = 0, c = m->clients; c; c = c->next){
+//		if (ispanel(c))
+//			continue;
+//		n++;
+//		c->pre.orig_image = getwindowximage(c);
+//	}
+//	if (n == 0)
+//		return;
+//	setpreviewwindowsizepositions(n, m, 60, 15);
+//	XEvent event;
+//	for(c = m->clients; c; c = c->next){
+//		if (ispanel(c))
+//			continue;
+//		if (!c->pre.win)
+//			c->pre.win = XCreateSimpleWindow(dpy, root, c->pre.x, c->pre.y, c->pre.scaled_image->width, c->pre.scaled_image->height, 1, BlackPixel(dpy, screen), WhitePixel(dpy, screen));
+//		else
+//			XMoveResizeWindow(dpy, c->pre.win, c->pre.x, c->pre.y, c->pre.scaled_image->width, c->pre.scaled_image->height);
+//		XSetWindowBorder(dpy, c->pre.win, scheme[SchemeNorm][ColBorder].pixel);
+//		XUnmapWindow(dpy, c->win);
+//		if (c->pre.win){
+//			XSelectInput(dpy, c->pre.win, ButtonPress | EnterWindowMask | LeaveWindowMask);
+//			XMapWindow(dpy, c->pre.win);
+//			GC gc = XCreateGC(dpy, c->pre.win, 0, NULL);
+//			XPutImage(dpy, c->pre.win, gc, c->pre.scaled_image, 0, 0, 0, 0, c->pre.scaled_image->width, c->pre.scaled_image->height);
+//		}
+//	}
+//	while (1) {
+//		XNextEvent(dpy, &event);
+//		if (event.type == ButtonPress)
+//			if (event.xbutton.button == Button1){
+//				for(c = m->clients; c; c = c->next){
+//					if (ispanel(c))
+//						continue;
+//					XUnmapWindow(dpy, c->pre.win);
+//					if (event.xbutton.window == c->pre.win){
+//						selmon->seltags ^= 1;
+//						m->tagset[selmon->seltags] = c->tags;
+//						focus_c = c;
+//						focus(NULL);
+//					}
+//					XMapWindow(dpy, c->win);
+//					XDestroyImage(c->pre.orig_image);
+//					XDestroyImage(c->pre.scaled_image);
+//				}
+//				break;
+//			}
+//		if (event.type == EnterNotify)
+//			for(c = m->clients; c; c = c->next){
+//				if (ispanel(c))
+//					continue;
+//				if (event.xcrossing.window == c->pre.win){
+//					XSetWindowBorder(dpy, c->pre.win, scheme[SchemeSel][ColBorder].pixel);
+//					break;
+//				}
+//			}
+//		if (event.type == LeaveNotify)
+//			for(c = m->clients; c; c = c->next){
+//				if (ispanel(c))
+//					continue;
+//				if (event.xcrossing.window == c->pre.win){
+//					XSetWindowBorder(dpy, c->pre.win, scheme[SchemeNorm][ColBorder].pixel);
+//					break;
+//				}
+//			}
+//	}
+//	arrange(m);
+//	focus(focus_c);
+//}
+
+//void
+//setpreviewwindowsizepositions(unsigned int n, Monitor *m, unsigned int gappo, unsigned int gappi){
+//	unsigned int i, j;
+//	unsigned int cx, cy, cw, ch, cmaxh;
+//	unsigned int cols, rows;
+//	Client *c, *tmpc, *first = NULL, *second = NULL;
+//
+//	/* find first non-panel client */
+//	for (c = m->clients; c; c = c->next)
+//		if (!ispanel(c)) { first = c; break; }
+//
+//	if (n == 1) {
+//		c = m->clients;
+//		cw = (m->ww - 2 * gappo) * 0.8;
+//		ch = (m->wh - 2 * gappo) * 0.9;
+//		c->pre.scaled_image = scaledownimage(c->pre.orig_image, cw, ch);
+//		c->pre.x = m->mx + (m->mw - c->pre.scaled_image->width) / 2;
+//		c->pre.y = m->my + (m->mh - c->pre.scaled_image->height) / 2;
+//		return;
+//	}
+//	if (n == 2) {
+//		c = m->clients;
+//		cw = (m->ww - 2 * gappo - gappi) / 2;
+//		ch = (m->wh - 2 * gappo) * 0.7;
+//		c->pre.scaled_image = scaledownimage(c->pre.orig_image, cw, ch);
+//		c->next->pre.scaled_image = scaledownimage(c->next->pre.orig_image, cw, ch);
+//		c->pre.x = m->mx + (m->mw - c->pre.scaled_image->width - gappi - c->next->pre.scaled_image->width) / 2;
+//		c->pre.y = m->my + (m->mh - c->pre.scaled_image->height) / 2;
+//		c->next->pre.x = c->pre.x + c->pre.scaled_image->width + gappi;
+//		c->next->pre.y = m->my + (m->mh - c->next->pre.scaled_image->height) / 2;
+//		return;
+//	}
+//	for (cols = 0; cols <= n / 2; cols++)
+//		if (cols * cols >= n)
+//			break;
+//	rows = (cols && (cols - 1) * cols >= n) ? cols - 1 : cols;
+//	ch = (m->wh - 2 * gappo) / rows;
+//	cw = (m->ww - 2 * gappo) / cols;
+//	c = m->clients;
+//	cy = 0;
+//	for (i = 0; i < rows; i++) {
+//		cx = 0;
+//		cmaxh = 0;
+//		tmpc = c;
+//		for (int j = 0; j < cols; j++) {
+//			if (!c)
+//				break;
+//			c->pre.scaled_image = scaledownimage(c->pre.orig_image, cw, ch);
+//			c->pre.x = cx;
+//			cmaxh = c->pre.scaled_image->height > cmaxh ? c->pre.scaled_image->height : cmaxh;
+//			cx += c->pre.scaled_image->width + gappi;
+//			c = c->next;
+//		}
+//		c = tmpc;
+//		cx = m->wx + (m->ww - cx) / 2;
+//		for (j = 0; j < cols; j++) {
+//			if (!c)
+//				break;
+//			c->pre.x += cx;
+//			c->pre.y = cy + (cmaxh - c->pre.scaled_image->height) / 2;
+//			c = c->next;
+//		}
+//		cy += cmaxh + gappi;
+//	}
+//	cy = m->wy + (m->wh - cy) / 2;
+//	for (c = m->clients; c; c = c->next)
+//		c->pre.y += cy;
+//}
+
+void
+setpreviewwindowsizepositions(unsigned int n, Monitor *m, unsigned int gappo, unsigned int gappi){
+	unsigned int i, j;
+	unsigned int cx, cy, cw, ch, cmaxh;
+	unsigned int cols, rows;
+	Client *c, *tmpc, *first = NULL, *second = NULL;
+
+	/* find first non-panel client */
+	for (c = m->clients; c; c = c->next)
+		if (!ispanel(c)) { first = c; break; }
+
+	if (n == 1) {
+		cw = (m->ww - 2 * gappo) * 0.8;
+		ch = (m->wh - 2 * gappo) * 0.9;
+		first->pre.scaled_image = scaledownimage(first->pre.orig_image, cw, ch);
+		first->pre.x = m->mx + (m->mw - first->pre.scaled_image->width) / 2;
+		first->pre.y = m->my + (m->mh - first->pre.scaled_image->height) / 2;
+		return;
+	}
+	if (n == 2) {
+		/* find second non-panel client */
+		for (c = first->next; c; c = c->next)
+			if (!ispanel(c)) { second = c; break; }
+		cw = (m->ww - 2 * gappo - gappi) / 2;
+		ch = (m->wh - 2 * gappo) * 0.7;
+		first->pre.scaled_image = scaledownimage(first->pre.orig_image, cw, ch);
+		second->pre.scaled_image = scaledownimage(second->pre.orig_image, cw, ch);
+		first->pre.x = m->mx + (m->mw - first->pre.scaled_image->width - gappi - second->pre.scaled_image->width) / 2;
+		first->pre.y = m->my + (m->mh - first->pre.scaled_image->height) / 2;
+		second->pre.x = first->pre.x + first->pre.scaled_image->width + gappi;
+		second->pre.y = m->my + (m->mh - second->pre.scaled_image->height) / 2;
+		return;
+	}
+	for (cols = 0; cols <= n / 2; cols++)
+		if (cols * cols >= n)
+			break;
+	rows = (cols && (cols - 1) * cols >= n) ? cols - 1 : cols;
+	ch = (m->wh - 2 * gappo) / rows;
+	cw = (m->ww - 2 * gappo) / cols;
+	c = first;
+	cy = 0;
+	for (i = 0; i < rows; i++) {
+		cx = 0;
+		cmaxh = 0;
+		tmpc = c;
+		for (j = 0; j < cols; j++) {
+			if (!c)
+				break;
+			if (ispanel(c)) { j--; c = c->next; continue; }
+			c->pre.scaled_image = scaledownimage(c->pre.orig_image, cw, ch);
+			c->pre.x = cx;
+			cmaxh = c->pre.scaled_image->height > cmaxh ? c->pre.scaled_image->height : cmaxh;
+			cx += c->pre.scaled_image->width + gappi;
+			c = c->next;
+		}
+		c = tmpc;
+		cx = m->wx + (m->ww - cx) / 2;
+		for (j = 0; j < cols; j++) {
+			if (!c)
+				break;
+			if (ispanel(c)) { j--; c = c->next; continue; }
+			c->pre.x += cx;
+			c->pre.y = cy + (cmaxh - c->pre.scaled_image->height) / 2;
+			c = c->next;
+		}
+		cy += cmaxh + gappi;
+	}
+	cy = m->wy + (m->wh - cy) / 2;
+	for (c = m->clients; c; c = c->next) {
+		if (ispanel(c))
+			continue;
+		c->pre.y += cy;
+	}
+}
+
+XImage*
+getwindowximage(Client *c) {
+	XWindowAttributes attr;
+	XGetWindowAttributes( dpy, c->win, &attr );
+	XRenderPictFormat *format = XRenderFindVisualFormat( dpy, attr.visual );
+	int hasAlpha = ( format->type == PictTypeDirect && format->direct.alphaMask );
+	XRenderPictureAttributes pa;
+	pa.subwindow_mode = IncludeInferiors;
+	Picture picture = XRenderCreatePicture( dpy, c->win, format, CPSubwindowMode, &pa );
+	Pixmap pixmap = XCreatePixmap(dpy, root, c->w, c->h, 32);
+	XRenderPictureAttributes pa2;
+	XRenderPictFormat *format2 = XRenderFindStandardFormat(dpy, PictStandardARGB32);
+	Picture pixmapPicture = XRenderCreatePicture( dpy, pixmap, format2, 0, &pa2 );
+	XRenderColor color;
+	color.red = 0x0000;
+	color.green = 0x0000;
+	color.blue = 0x0000;
+	color.alpha = 0x0000;
+	XRenderFillRectangle (dpy, PictOpSrc, pixmapPicture, &color, 0, 0, c->w, c->h);
+	XRenderComposite(dpy, hasAlpha ? PictOpOver : PictOpSrc, picture, 0,
+			pixmapPicture, 0, 0, 0, 0, 0, 0,
+			c->w, c->h);
+	XImage* temp = XGetImage( dpy, pixmap, 0, 0, c->w, c->h, AllPlanes, ZPixmap );
+	temp->red_mask = format2->direct.redMask << format2->direct.red;
+	temp->green_mask = format2->direct.greenMask << format2->direct.green;
+	temp->blue_mask = format2->direct.blueMask << format2->direct.blue;
+	temp->depth = DefaultDepth(dpy, screen);
+	return temp;
+}
+
+XImage*
+scaledownimage(XImage *orig_image, unsigned int cw, unsigned int ch) {
+	int factor_w = orig_image->width / cw + 1;
+	int factor_h = orig_image->height / ch + 1;
+	int scale_factor = factor_w > factor_h ? factor_w : factor_h;
+	int scaled_width = orig_image->width / scale_factor;
+	int scaled_height = orig_image->height / scale_factor;
+	XImage *scaled_image = XCreateImage(dpy, DefaultVisual(dpy, DefaultScreen(dpy)),
+			orig_image->depth,
+			ZPixmap, 0, NULL,
+			scaled_width, scaled_height,
+			32, 0);
+	scaled_image->data = malloc(scaled_image->height * scaled_image->bytes_per_line);
+	for (int y = 0; y < scaled_height; y++) {
+		for (int x = 0; x < scaled_width; x++) {
+			int orig_x = x * scale_factor;
+			int orig_y = y * scale_factor;
+			unsigned long pixel = XGetPixel(orig_image, orig_x, orig_y);
+			XPutPixel(scaled_image, x, y, pixel);
+		}
+	}
+	scaled_image->depth = orig_image->depth;
+	return scaled_image;
 }
 
 int

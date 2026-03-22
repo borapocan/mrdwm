@@ -18,6 +18,10 @@ static const int vertpad		  = 10;
 static const int sidepad		  = 10;
 #define ICONSIZE 16
 #define ICONSPACING 5
+
+//#define ACTUALFULLSCREEN
+#define AWESOMEBAR
+
 static const char *fonts[]                = { "monospace:size=15", "NotoColorEmoji:pixelsize=12:antialias=true:autohint=true" };
 static const char dmenufont[]             = "monospace:size=15";
 
@@ -145,6 +149,7 @@ static const Key keys[] = {
 	{ MODKEY|ShiftMask,             XK_equal,  setgaps,        {.i = 0  } },
 	{ MODKEY,                       XK_s,      show,           {0} },
 	{ MODKEY|ShiftMask,             XK_s,      showall,        {0} },
+	{ MODKEY,                       XK_w,      previewallwin,  {0} },
 	{ MODKEY|ShiftMask,             XK_h,      hide,           {0} },
 	TAGKEYS(                        XK_1,                      0)
 	TAGKEYS(                        XK_2,                      1)
