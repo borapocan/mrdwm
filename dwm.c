@@ -1095,10 +1095,10 @@ drawbar(Monitor *m)
 					continue;
 				if (m->hov == c)
 					scm = SchemeHov;
-				else if (m->sel == c && m->hov == NULL)
-					scm = SchemeSel;
 				else if (HIDDEN(c))
 					scm = SchemeHid;
+				else if (m->sel == c && m->hov == NULL)
+					scm = SchemeSel;
 				else
 					scm = SchemeNorm;
 				drw_setscheme(drw, scheme[scm]);
