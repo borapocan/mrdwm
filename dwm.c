@@ -66,6 +66,9 @@
 #define TAGMASK                 ((1 << LENGTH(tags)) - 1)
 #define TEXTW(X)                (drw_fontset_getwidth(drw, (X)) + lrpad)
 
+#define STATUSIMG_CACHE_MAX 64
+#define STATUSIMG_PATH_MAX  4096
+
 /* enums */
 enum { CurNormal, CurResize, CurMove, CurLast }; /* cursor */
 //enum { SchemeNorm, SchemeSel }; /* color schemes */
@@ -73,7 +76,7 @@ enum { CurNormal, CurResize, CurMove, CurLast }; /* cursor */
 enum { SchemeNorm, SchemeSel, SchemeHov, SchemeHid, SchemeStatus, SchemeTagsSel, SchemeTagsNorm, SchemeInfoSel, SchemeInfoNorm }; /* color schemes */
 enum { NetSupported, NetWMName, NetWMIcon, NetWMState, NetWMCheck,
        NetWMFullscreen, NetActiveWindow, NetWMWindowType,
-       NetWMWindowTypeDialog, NetClientList, NetLast }; /* EWMH atoms */
+       NetWMWindowTypeDialog, NetClientList, NetClientInfo, NetLast }; /* EWMH atoms */
 enum { WMProtocols, WMDelete, WMState, WMTakeFocus, WMLast }; /* default atoms */
 enum { ClkTagBar, ClkLtSymbol, ClkStatusText, ClkButton, ClkWinTitle,
        //ClkExBarLeftStatus, ClkExBarMiddle, ClkExBarRightStatus,
@@ -113,7 +116,7 @@ struct Client {
 	int basew, baseh, incw, inch, maxw, maxh, minw, minh, hintsvalid;
 	int bw, oldbw;
 	unsigned int tags;
-	int isfixed, isfloating, isurgent, neverfocus, oldstate, isfullscreen, isterminal, noswallow;
+	int isfixed, iscentered, isfloating, isurgent, neverfocus, oldstate, isfullscreen, isterminal, noswallow;
 	unsigned int icw, ich;
 	Picture icon;
 	pid_t pid;
@@ -175,11 +178,19 @@ typedef struct {
 	const char *instance;
 	const char *title;
 	unsigned int tags;
+	int iscentered;
 	int isfloating;
 	int isterminal;
 	int noswallow;
 	int monitor;
 } Rule;
+
+typedef struct {
+    char         path[STATUSIMG_PATH_MAX];
+    Imlib_Image  img;
+    int          orig_w;
+    int          orig_h;
+} StatusImgCache;
 
 /* function declarations */
 static void applyrules(Client *c);
@@ -251,9 +262,11 @@ static void restack(Monitor *m);
 static void run(void);
 static void runautostart(void);
 static void scan(void);
+static XImage *scaleimagetofit(XImage *orig_image, unsigned int tw, unsigned int th);
 static int sendevent(Client *c, Atom proto);
 static void sendmon(Client *c, Monitor *m);
 static void setclientstate(Client *c, long state);
+static void setclienttagprop(Client *c);
 static void setfocus(Client *c);
 static void setfullscreen(Client *c, int fullscreen);
 static void setgaps(const Arg *arg);
@@ -302,10 +315,11 @@ static int xerror(Display *dpy, XErrorEvent *ee);
 static int xerrordummy(Display *dpy, XErrorEvent *ee);
 static int xerrorstart(Display *dpy, XErrorEvent *ee);
 static void zoom(const Arg *arg);
-static void previewallwin();
-static void setpreviewwindowsizepositions(unsigned int n, Monitor *m, unsigned int gappo, unsigned int gappi);
+static void previewallwin(const Arg *arg);
+static void previewallwinwrap(const Arg *arg);
+//static void setpreviewwindowsizepositions(unsigned int n, Monitor *m, unsigned int gappo, unsigned int gappi);
 static XImage *getwindowximage(Client *c);
-static XImage *scaledownimage(XImage *orig_image, unsigned int cw, unsigned int ch);
+//static XImage *scaledownimage(XImage *orig_image, unsigned int cw, unsigned int ch);
 static void showtagpreview(unsigned int i);
 static void takepreview(void);
 static void previewtag(const Arg *arg);
@@ -314,14 +328,18 @@ static int isdescprocess(pid_t p, pid_t c);
 static Client *swallowingclient(Window w);
 static Client *termforwin(const Client *c);
 static pid_t winpid(Window w);
-
+static void flushimgcache(void);
+static StatusImgCache * getimg(const char *path);
+static int drawimg(const char *path, int x, int bh);
+static int measureimg(const char *path, int bh);
+static int collectpath(const char *text, int start, char *out);
 /* variables */
 static const char autostartblocksh[] = "autostart_blocking.sh";
 static const char autostartsh[] = "autostart.sh";
 static const char dwmdir[] = "dwm";
 static const char localshare[] = ".local/share";
 static const char broken[] = "broken";
-static char stext[256];
+static char stext[1024];
 static int statusw;
 static int statussig;
 static pid_t statuspid = -1;
@@ -352,6 +370,11 @@ static void (*handler[LASTEvent]) (XEvent *) = {
 static Atom wmatom[WMLast], netatom[NetLast];
 static int restart = 0;
 static int running = 1;
+static int run_preview = 0;
+static int run_recompile = 0;
+static int preview_running = 0;
+
+static volatile sig_atomic_t sigusr1_count = 0;
 static Cur *cursor[CurLast];
 static Clr **scheme;
 static Display *dpy;
@@ -361,6 +384,9 @@ static Window root, wmcheckwin;
 static xcb_connection_t *xcon;
 static int vp;               /* vertical padding for bar */
 static int sp;               /* side padding for bar */
+
+static StatusImgCache _imgcache[STATUSIMG_CACHE_MAX];
+static int            _imgcache_n = 0;
 
 /* configuration, allows nested code to access above variables */
 #include "config.h"
@@ -379,6 +405,7 @@ applyrules(Client *c)
 	XClassHint ch = { NULL, NULL };
 
 	/* rule matching */
+	c->iscentered = 0;
 	c->isfloating = 0;
 	c->tags = 0;
 	XGetClassHint(dpy, c->win, &ch);
@@ -393,6 +420,7 @@ applyrules(Client *c)
 		{
 			c->isterminal = r->isterminal;
 			c->noswallow = r->noswallow;
+			c->iscentered = r->iscentered;
 			c->isfloating = r->isfloating;
 			c->tags |= r->tags;
 			for (m = mons; m && m->num != r->monitor; m = m->next);
@@ -611,27 +639,61 @@ buttonpress(XEvent *e)
 						if (x >= ev->x)
 							break;
 						statussig = ch;
+					} else if (*s == '^' && *(s+1) == 'i') {
+						/* measure image width */
+						char imgpath[STATUSIMG_PATH_MAX];
+						int end = collectpath(s + 2, 0, imgpath);
+						x += measureimg(imgpath, bh) + 2;
+						s += end + 1; /* skip past closing ^ */
+						text = s + 1;
+					} else if (*s == '^' && *(s+1) != '^') {
+						/* skip other ^ commands */
+						while (*s && *s != '^') s++;
 					}
 				}
 			//else
 			//	click = ClkWinTitle;
 			} else {
 				x += TEXTW(selmon->ltsymbol);
-				c = m->clients;
-
-				if (c) {
-					do {
-						if (!ISVISIBLE(c))
+				if (m->bt > 0) {
+					int remainder = m->btw % m->bt;
+					int tabw = (1.0 / (double)m->bt) * m->btw + 1;
+					Client *found = NULL;
+					for (c = m->clients; c; c = c->next) {
+						if (!ISVISIBLE(c) || ispanel(c))
 							continue;
-						else
-							x +=(1.0 / (double)m->bt) * m->btw;
-					} while (ev->x > x && (c = c->next));
-
+						int tw = tabw;
+						if (remainder >= 0) {
+							if (remainder == 0) tw--;
+							remainder--;
+						}
+						if (ev->x >= x && ev->x < x + tw) {
+							found = c;
+							break;
+						}
+						x += tw;
+					}
 					click = ClkWinTitle;
-					arg.v = c;
+					arg.v = found;
 				}
-
 			}
+			//else {
+			//	x += TEXTW(selmon->ltsymbol);
+			//	c = m->clients;
+
+			//	if (c) {
+			//		do {
+			//			if (!ISVISIBLE(c))
+			//				continue;
+			//			else
+			//				x +=(1.0 / (double)m->bt) * m->btw;
+			//		} while (ev->x > x && (c = c->next));
+
+			//		click = ClkWinTitle;
+			//		arg.v = c;
+			//	}
+
+			//}
 		}
 	}
 	//else if (ev->window == selmon->dockwin) {
@@ -770,6 +832,7 @@ checkotherwm(void)
 void
 cleanup(void)
 {
+	flushimgcache();
 	Arg a = {.ui = ~0};
 	Layout foo = { "", NULL };
 	Monitor *m;
@@ -785,7 +848,7 @@ cleanup(void)
 		cleanupmon(mons);
 	for (i = 0; i < CurLast; i++)
 		drw_cur_free(drw, cursor[i]);
-	for (i = 0; i < LENGTH(colors); i++)
+	for (i = 0; i < LENGTH(colors) + 1; i++)
 		free(scheme[i]);
 	free(scheme);
 	XDestroyWindow(dpy, wmcheckwin);
@@ -1033,6 +1096,128 @@ dirtomon(int dir)
 	return m;
 }
 
+
+int
+drawstatusbar(Monitor *m, int bh, char *stext)
+{
+    int   ret, i, w, x, len;
+    short isCode = 0;
+    char *text;
+    char *p;
+    char  imgpath[STATUSIMG_PATH_MAX];
+
+    len = strlen(stext) + 1;
+    if (!(text = (char *)malloc(sizeof(char) * len)))
+        die("malloc");
+    p = text;
+    memcpy(text, stext, len);
+
+    /* ── pass 1: measure total pixel width ─────────────────────────────── */
+    w = 0;
+    i = -1;
+    while (text[++i]) {
+        if (text[i] == '^') {
+            if (!isCode) {
+                isCode = 1;
+                text[i] = '\0';
+                w += TEXTW(text) - lrpad;
+                text[i] = '^';
+                if (text[++i] == 'f') {
+                    w += atoi(text + ++i);
+                } else if (text[i] == 'i') {
+                    int end = collectpath(text, i + 1, imgpath);
+                    w += measureimg(imgpath, bh) + 2; /* 2px right gap */
+                    i = end - 1;
+                }
+            } else {
+                isCode = 0;
+                text = text + i + 1;
+                i = -1;
+            }
+        }
+    }
+    if (!isCode)
+        w += TEXTW(text) - lrpad;
+    else
+        isCode = 0;
+    text = p;
+
+    w += lrpad + 2; /* full font padding + 2px right edge */
+    ret = x = m->ww - w;
+
+    /* ── background rectangle ──────────────────────────────────────────── */
+    drw_setscheme(drw, scheme[SchemeTagsNorm]);
+    drw_rect(drw, x, 0, w, bh, 1, 1);
+    x++;
+
+    /* ── pass 2: render ────────────────────────────────────────────────── */
+    i = -1;
+    while (text[++i]) {
+        if (text[i] == '^' && !isCode) {
+            isCode = 1;
+
+            /* render accumulated plain text before this command */
+            text[i] = '\0';
+            w = TEXTW(text) - lrpad;
+            drw_text(drw, x, 0, w, bh, 0, text, 0);
+            x += w;
+            text[i] = '^';
+
+            /* step onto command letter */
+            while (text[++i] != '^') {
+                if (text[i] == 'c') {
+                    char buf[8];
+                    memcpy(buf, (char*)text + i + 1, 7);
+                    buf[7] = '\0';
+                    drw_clr_create(drw, &drw->scheme[ColFg], buf);
+                    i += 7;
+                } else if (text[i] == 'b') {
+                    char buf[8];
+                    memcpy(buf, (char*)text + i + 1, 7);
+                    buf[7] = '\0';
+                    drw_clr_create(drw, &drw->scheme[ColBg], buf);
+                    i += 7;
+                } else if (text[i] == 'd') {
+                    drw->scheme[ColFg] = scheme[SchemeTagsNorm][ColFg];
+                    drw->scheme[ColBg] = scheme[SchemeTagsNorm][ColBg];
+                } else if (text[i] == 'r') {
+                    int rx = atoi(text + ++i);
+                    while (text[++i] != ',');
+                    int ry = atoi(text + ++i);
+                    while (text[++i] != ',');
+                    int rw = atoi(text + ++i);
+                    while (text[++i] != ',');
+                    int rh = atoi(text + ++i);
+                    drw_rect(drw, rx + x, ry, rw, rh, 1, 0);
+                } else if (text[i] == 'f') {
+                    x += atoi(text + ++i);
+                } else if (text[i] == 'i') {
+                    int end = collectpath(text, i + 1, imgpath);
+                    int imgw = drawimg(imgpath, x, bh);
+                    x += imgw + 2; /* image + 2px right gap only */
+                    i = end - 1;
+                }
+            }
+
+            /* i is now on the closing '^' */
+            text = text + i + 1;
+            i = -1;
+            isCode = 0;
+        }
+    }
+
+    /* render any trailing plain text — use full TEXTW so it fits */
+    if (!isCode) {
+        w = TEXTW(text) - lrpad;
+        drw_text(drw, x, 0, w + lrpad, bh, lrpad / 2, text, 0);
+    }
+
+    drw_setscheme(drw, scheme[SchemeTagsNorm]);
+    free(p);
+
+    return ret;
+}
+
 void
 drawbar(Monitor *m)
 {
@@ -1043,25 +1228,29 @@ drawbar(Monitor *m)
 	if (!m->showbar)
 		return;
 	if (m == selmon) {
-		char *text, *s, ch;
-		drw_setscheme(drw, scheme[SchemeStatus]);
-		tw = statusw;
-		x = m->ww - statusw;
-		for (text = s = stext; *s; s++) {
-			if ((unsigned char)(*s) < ' ') {
-				ch = *s;
-				*s = '\0';
-				w = TEXTW(text) - lrpad;
-				drw_text(drw, x, 0, w, bh, 0, text, 0);
-				x += w;
-				*s = ch;
-				text = s + 1;
-			}
-		}
-		w = TEXTW(text);
-		drw_text(drw, x, 0, w, bh, 0, text, 0);
-		tw = statusw;
+		tw = m->ww - drawstatusbar(m, bh, stext);
+		statusw = tw;
 	}
+	//if (m == selmon) {
+	//	char *text, *s, ch;
+	//	drw_setscheme(drw, scheme[SchemeStatus]);
+	//	tw = statusw;
+	//	x = m->ww - statusw;
+	//	for (text = s = stext; *s; s++) {
+	//		if ((unsigned char)(*s) < ' ') {
+	//			ch = *s;
+	//			*s = '\0';
+	//			w = TEXTW(text) - lrpad;
+	//			drw_text(drw, x, 0, w, bh, 0, text, 0);
+	//			x += w;
+	//			*s = ch;
+	//			text = s + 1;
+	//		}
+	//	}
+	//	w = TEXTW(text);
+	//	drw_text(drw, x, 0, w, bh, 0, text, 0);
+	//	tw = statusw;
+	//}
 	for (c = m->clients; c; c = c->next) {
 		if (ispanel(c))
 			continue;
@@ -1107,9 +1296,14 @@ drawbar(Monitor *m)
 						tabw--;
 					remainder--;
 				}
-				drw_text(drw, x, 0, tabw - 1, bh, lrpad / 2 + (c->icon ? c->icw + ICONSPACING : 0), c->name, 0);
+				//drw_text(drw, x, 0, tabw - 1, bh, lrpad / 2 + (c->icon ? c->icw + ICONSPACING : 0), c->name, 0);
+				int total = TEXTW(c->name) - lrpad + (c->icon ? c->icw + ICONSPACING : 0);
+				int mid = (tabw - 1 - total) / 2;
+				if (mid < lrpad / 2) mid = lrpad / 2;
+				drw_text(drw, x, 0, tabw - 1, bh, mid + (c->icon ? c->icw + ICONSPACING : 0), c->name, 0);
 				if (c->icon)
-					drw_pic(drw, x + lrpad / 2, (bh - c->ich) / 2, c->icw, c->ich, c->icon);
+					drw_pic(drw, x + mid, (bh - c->ich) / 2, c->icw, c->ich, c->icon);
+					//drw_pic(drw, x + lrpad / 2, (bh - c->ich) / 2, c->icw, c->ich, c->icon);
 				XSetForeground(dpy, drw->gc, 0xFFFFFF);
 				XDrawLine(dpy, drw->drawable, drw->gc, x, 0, x, bh);
 				XDrawLine(dpy, drw->drawable, drw->gc, x + tabw - 1, 0, x + tabw - 1, bh);
@@ -1472,6 +1666,131 @@ expose(XEvent *e)
 	if (ev->count == 0 && (m = wintomon(ev->window)))
 		drawbar(m);
 }
+
+void
+flushimgcache(void)
+{
+    int i;
+    for (i = 0; i < _imgcache_n; i++) {
+        if (_imgcache[i].img) {
+            imlib_context_set_image(_imgcache[i].img);
+            imlib_free_image();
+            _imgcache[i].img = NULL;
+        }
+        _imgcache[i].path[0] = '\0';
+    }
+    _imgcache_n = 0;
+}
+
+
+static StatusImgCache *
+getimg(const char *path)
+{
+    int i;
+
+    /* search cache first */
+    for (i = 0; i < _imgcache_n; i++)
+        if (strncmp(_imgcache[i].path, path, STATUSIMG_PATH_MAX) == 0)
+            return &_imgcache[i];
+
+    /* cache full — evict oldest (index 0) by shifting */
+    if (_imgcache_n >= STATUSIMG_CACHE_MAX) {
+        imlib_context_set_image(_imgcache[0].img);
+        imlib_free_image();
+        memmove(&_imgcache[0], &_imgcache[1],
+                sizeof(StatusImgCache) * (STATUSIMG_CACHE_MAX - 1));
+        _imgcache_n--;
+    }
+
+    Imlib_Image img = imlib_load_image(path);
+    if (!img)
+        return NULL;
+
+    imlib_context_set_image(img);
+    StatusImgCache *entry = &_imgcache[_imgcache_n++];
+    strncpy(entry->path, path, STATUSIMG_PATH_MAX - 1);
+    entry->path[STATUSIMG_PATH_MAX - 1] = '\0';
+    entry->img    = img;
+    entry->orig_w = imlib_image_get_width();
+    entry->orig_h = imlib_image_get_height();
+    return entry;
+}
+
+/* ── helper: draw one image at (x, 1) scaled to bar height ───────────────── */
+/* Returns the pixel width consumed so the caller can advance x.              */
+static int
+drawimg(const char *path, int x, int bh)
+{
+    StatusImgCache *ic = getimg(path);
+    if (!ic)
+        return 0;
+    int dh = (ic->orig_h > 0 && ic->orig_h < bh - 2) ? ic->orig_h : bh - 2;
+    if (dh < 1) dh = 1;
+    int dw = (ic->orig_h > 0)
+             ? ic->orig_w * dh / ic->orig_h
+             : dh;
+    if (dw < 1) dw = 1;
+    Pixmap pm = XCreatePixmap(dpy, drw->drawable, dw, dh,
+                              DefaultDepth(dpy, screen));
+    if (!pm)
+        return 0;
+    /* fill background with bar color so it shows through transparent areas */
+    XSetForeground(dpy, drw->gc, drw->scheme[ColBg].pixel);
+    XFillRectangle(dpy, pm, drw->gc, 0, 0, dw, dh);
+    imlib_context_set_image(ic->img);
+    imlib_context_set_display(dpy);
+    imlib_context_set_visual(DefaultVisual(dpy, screen));
+    imlib_context_set_drawable(pm);
+    /* PNG: blend=1 for real alpha transparency
+     * SVG: blend=0 because SVG loader ignores alpha, renders with black bg
+     *      XFillRectangle already filled bar color so SVG renders on top */
+    const char *ext = strrchr(path, '.');
+    int is_svg = (ext && strcasecmp(ext, ".svg") == 0);
+    imlib_context_set_blend(is_svg ? 0 : 1);
+    imlib_render_image_on_drawable_at_size(0, 0, dw, dh);
+    /* vertically center the image in the bar */
+    int dy = (bh - dh) / 2;
+    XCopyArea(dpy, pm, drw->drawable, drw->gc, 0, 0, dw, dh, x, dy);
+    XFreePixmap(dpy, pm);
+    return dw;
+}
+/* ── helper: measure image width (same formula as drawimg) ───────────────── */
+static int
+measureimg(const char *path, int bh)
+{
+    StatusImgCache *ic = getimg(path);
+    if (!ic)
+        return 0;
+
+    int dh = (ic->orig_h > 0 && ic->orig_h < bh - 2) ? ic->orig_h : bh - 2;
+    if (dh < 1) dh = 1;
+    int dw = (ic->orig_h > 0)
+             ? ic->orig_w * dh / ic->orig_h
+             : dh;
+    return (dw < 1) ? 1 : dw;
+}
+
+/* ── helper: collect path token up to the closing '^' ───────────────────── */
+/* Writes at most (STATUSIMG_PATH_MAX-1) bytes into out[], NUL-terminates.   */
+/* Returns the index of the closing '^' in text[] (so the caller can set     */
+/* i = that index; the outer loop's ++i will then skip past it).             */
+static int
+collectpath(const char *text, int start, char *out)
+{
+    int j = 0;
+    int i = start;
+
+    /* skip optional leading whitespace after the 'i' command letter */
+    while (text[i] == ' ' || text[i] == '\t')
+        i++;
+
+    while (text[i] && text[i] != '^' && j < STATUSIMG_PATH_MAX - 1)
+        out[j++] = text[i++];
+
+    out[j] = '\0';
+    return i; /* points at '^' or '\0' */
+}
+
 
 void
 fibonacci(Monitor *mon, int s) {
@@ -2093,6 +2412,13 @@ manage(Window w, XWindowAttributes *wa)
 	// no border - even when active
 	//if (ispanel(c)) c->bw = c->oldbw = 0;
 	if (ispanel(c)) {
+		c->isfloating = 1;
+		c->tags = ~0;
+    		c->bw = c->oldbw = 0;
+    		c->x = c->oldx = c->mon->mx;
+    		c->y = c->oldy = c->mon->my + c->mon->mh - wa->height;
+    		c->w = c->oldw = wa->width;
+    		c->h = c->oldh = wa->height;
 		wc.y = c->mon->my + c->mon->mh - wa->height;
 		wc.x = c->mon->mx;
 		wc.stack_mode = Above;
@@ -2106,6 +2432,29 @@ manage(Window w, XWindowAttributes *wa)
 	updatewindowtype(c);
 	updatesizehints(c);
 	updatewmhints(c);
+	if (c->iscentered) {
+		c->x = c->mon->mx + (c->mon->mw - WIDTH(c)) / 2;
+		c->y = c->mon->my + (c->mon->mh - HEIGHT(c)) / 2;
+	}
+	{
+		int format;
+		unsigned long *data, n, extra;
+		Monitor *m;
+		Atom atom;
+		if (XGetWindowProperty(dpy, c->win, netatom[NetClientInfo], 0L, 2L, False, XA_CARDINAL,
+				&atom, &format, &n, &extra, (unsigned char **)&data) == Success && n == 2) {
+			c->tags = *data;
+			for (m = mons; m; m = m->next) {
+				if (m->num == *(data+1)) {
+					c->mon = m;
+					break;
+				}
+			}
+		}
+		if (n > 0)
+			XFree(data);
+	}
+	setclienttagprop(c);
 	XSelectInput(dpy, w, EnterWindowMask|FocusChangeMask|PropertyChangeMask|StructureNotifyMask);
 	grabbuttons(c, 0);
 	if (!c->isfloating)
@@ -2185,10 +2534,9 @@ motionnotify(XEvent *e)
 		do
 			x += TEXTW(tags[i]);
 		while (ev->x >= x && ++i < LENGTH(tags));
-	/* FIXME when hovering the mouse over the tags and we view the tag,
-	 *       the preview window get's in the preview shot */
-
-	     	if (i < LENGTH(tags)) {
+		/* FIXME when hovering the mouse over the tags and we view the tag,
+		 *       the preview window get's in the preview shot */
+		if (i < LENGTH(tags)) {
 			if (selmon->previewshow != (i + 1)
 			&& !(selmon->tagset[selmon->seltags] & 1 << i)) {
 				selmon->previewshow = i + 1;
@@ -2208,20 +2556,18 @@ motionnotify(XEvent *e)
 		selmon->previewshow = 0;
 		XUnmapWindow(dpy, selmon->tagwin);
 	}
-	//if (ev->window != root)
+
 	if (ev->window != selmon->barwin) {
 		if (selmon->hov) {
 			if (selmon->hov != selmon->sel)
 				XSetWindowBorder(dpy, selmon->hov->win, scheme[SchemeNorm][ColBorder].pixel);
 			else
 				XSetWindowBorder(dpy, selmon->hov->win, scheme[SchemeSel][ColBorder].pixel);
-
 			selmon->hov = NULL;
 			c = wintoclient(ev->window);
 			m = c ? c->mon : wintomon(ev->window);
 			drawbar(m);
 		}
-
 		if (ev->window == root) {
 			if ((m = recttomon(ev->x_root, ev->y_root, 1, 1)) != mon && mon) {
 				unfocus(selmon->sel, 1);
@@ -2230,26 +2576,22 @@ motionnotify(XEvent *e)
 			}
 			mon = m;
 		}
-
 		return;
-	//if ((m = recttomon(ev->x_root, ev->y_root, 1, 1)) != mon && mon) {
-	//	unfocus(selmon->sel, 1);
-	//	selmon = m;
-	//	focus(NULL);
-	//}
 	}
-	//mon = m;
+
 	c = wintoclient(ev->window);
 	m = c ? c->mon : wintomon(ev->window);
 	c = m->clients;
 
-	x = 0, i = 0;
+	x = 0; i = 0;
 	do
 		x += TEXTW(tags[i]);
 	while (ev->x >= x && ++i < LENGTH(tags));
 
-
-	if (i < LENGTH(tags) || ev->x < x + TEXTW(selmon->ltsymbol) || ev->x > selmon->ww - TEXTW(stext) + lrpad - 2) {
+	/* mouse is over tags, layout symbol, or status area — clear hover */
+	if (i < LENGTH(tags)
+	|| ev->x < x + TEXTW(selmon->ltsymbol)
+	|| ev->x > selmon->ww - statusw) {
 		if (selmon->hov) {
 			if (selmon->hov != selmon->sel)
 				XSetWindowBorder(dpy, selmon->hov->win, scheme[SchemeNorm][ColBorder].pixel);
@@ -2258,33 +2600,52 @@ motionnotify(XEvent *e)
 			selmon->hov = NULL;
 			drawbar(m);
 		}
-	} else {
-		x += TEXTW(selmon->ltsymbol);
-		if (c) {
-			do {
-				if (!ISVISIBLE(c))
-					continue;
-				else
-					x +=(1.0 / (double)m->bt) * m->btw;
-			} while (ev->x > x && (c = c->next));
-			if (c) {
-				if (selmon->hov) {
-					if (selmon->hov != selmon->sel)
-						XSetWindowBorder(dpy, selmon->hov->win, scheme[SchemeNorm][ColBorder].pixel);
-					else
-						XSetWindowBorder(dpy, selmon->hov->win, scheme[SchemeSel][ColBorder].pixel);
-				}
-				selmon->hov = c;
-				focus(c);
-				restack(selmon);
-				XSetWindowBorder(dpy, c->win, scheme[SchemeHov][ColBorder].pixel);
-			}
-		}
-		drawbar(m);
+		return;
 	}
 
+	/* mouse is over the title area */
+	x += TEXTW(selmon->ltsymbol);
+	if (m->bt > 0) {
+		int remainder = m->btw % m->bt;
+		int tabw = (1.0 / (double)m->bt) * m->btw + 1;
+		Client *found = NULL;
+		for (c = m->clients; c; c = c->next) {
+			if (!ISVISIBLE(c) || ispanel(c))
+				continue;
+			int tw = tabw;
+			if (remainder >= 0) {
+				if (remainder == 0) tw--;
+				remainder--;
+			}
+			if (ev->x >= x && ev->x < x + tw) {
+				found = c;
+				break;
+			}
+			x += tw;
+		}
+		if (found) {
+			if (selmon->hov) {
+				if (selmon->hov != selmon->sel)
+					XSetWindowBorder(dpy, selmon->hov->win, scheme[SchemeNorm][ColBorder].pixel);
+				else
+					XSetWindowBorder(dpy, selmon->hov->win, scheme[SchemeSel][ColBorder].pixel);
+			}
+			selmon->hov = found;
+			focus(found);
+			restack(selmon);
+			XSetWindowBorder(dpy, found->win, scheme[SchemeHov][ColBorder].pixel);
+		} else {
+			if (selmon->hov) {
+				if (selmon->hov != selmon->sel)
+					XSetWindowBorder(dpy, selmon->hov->win, scheme[SchemeNorm][ColBorder].pixel);
+				else
+					XSetWindowBorder(dpy, selmon->hov->win, scheme[SchemeSel][ColBorder].pixel);
+				selmon->hov = NULL;
+			}
+		}
+	}
+	drawbar(m);
 }
-
 void
 movemouse(const Arg *arg)
 {
@@ -2544,11 +2905,24 @@ void
 run(void)
 {
 	XEvent ev;
-	/* main event loop */
 	XSync(dpy, False);
-	while (running && !XNextEvent(dpy, &ev))
+	while (running && !XNextEvent(dpy, &ev)) {
+		if (run_preview) {
+			run_preview = 0;
+			if (!preview_running) {
+				preview_running = 1;
+				previewallwin(NULL);
+				preview_running = 0;
+			}
+		}
+		if (run_recompile) {
+			run_recompile = 0;
+			Arg a = {.i = 1};
+			quit(&a);
+		}
 		if (handler[ev.type])
-			handler[ev.type](&ev); /* call handler */
+			handler[ev.type](&ev);
+	}
 }
 
 void
@@ -2667,6 +3041,7 @@ sendmon(Client *c, Monitor *m)
 	c->tags = m->tagset[m->seltags]; /* assign tags of target monitor */
 	attach(c);
 	attachstack(c);
+	setclienttagprop(c);
 	focus(NULL);
 	arrange(NULL);
 }
@@ -2916,7 +3291,19 @@ previewtag(const Arg *arg)
 }
 
 
+static void
+sigusr1(int unused)
+{
+    sigusr1_count++;
+    if (!preview_running && (sigusr1_count % 2 == 1))
+        run_preview = 1;
+}
 
+static void
+sigusr2(int unused)
+{
+    run_recompile = 1;
+}
 
 void
 setup(void)
@@ -2935,6 +3322,8 @@ setup(void)
 	/* clean up any zombies (inherited from .xinitrc etc) immediately */
 	signal(SIGHUP, sighup);
 	signal(SIGTERM, sigterm);
+	signal(SIGUSR1, sigusr1);
+	signal(SIGUSR2, sigusr2);
 
 	while (waitpid(-1, NULL, WNOHANG) > 0);
 
@@ -2969,12 +3358,14 @@ setup(void)
 	netatom[NetWMWindowType] = XInternAtom(dpy, "_NET_WM_WINDOW_TYPE", False);
 	netatom[NetWMWindowTypeDialog] = XInternAtom(dpy, "_NET_WM_WINDOW_TYPE_DIALOG", False);
 	netatom[NetClientList] = XInternAtom(dpy, "_NET_CLIENT_LIST", False);
+	netatom[NetClientInfo] = XInternAtom(dpy, "_NET_CLIENT_INFO", False);
 	/* init cursors */
 	cursor[CurNormal] = drw_cur_create(drw, XC_left_ptr);
 	cursor[CurResize] = drw_cur_create(drw, XC_sizing);
 	cursor[CurMove] = drw_cur_create(drw, XC_fleur);
 	/* init appearance */
-	scheme = ecalloc(LENGTH(colors), sizeof(Clr *));
+	scheme = ecalloc(LENGTH(colors) + 1, sizeof(Clr *));
+	scheme[LENGTH(colors)] = drw_scm_create(drw, colors[0], 3);
 	for (i = 0; i < LENGTH(colors); i++)
 		scheme[i] = drw_scm_create(drw, colors[i], 3);
 	/* init bars */
@@ -2993,6 +3384,7 @@ setup(void)
 	XChangeProperty(dpy, root, netatom[NetSupported], XA_ATOM, 32,
 		PropModeReplace, (unsigned char *) netatom, NetLast);
 	XDeleteProperty(dpy, root, netatom[NetClientList]);
+	XDeleteProperty(dpy, root, netatom[NetClientInfo]);
 	/* select events */
 	wa.cursor = cursor[CurNormal]->cursor;
 	wa.event_mask = SubstructureRedirectMask|SubstructureNotifyMask
@@ -3127,10 +3519,21 @@ spiral(Monitor *mon) {
 }
 
 void
+setclienttagprop(Client *c)
+{
+	long data[] = { (long) c->tags, (long) c->mon->num };
+	XChangeProperty(dpy, c->win, netatom[NetClientInfo], XA_CARDINAL, 32,
+			PropModeReplace, (unsigned char *) data, 2);
+}
+
+void
 tag(const Arg *arg)
 {
+	Client *c;
 	if (selmon->sel && arg->ui & TAGMASK) {
+		c = selmon->sel;
 		selmon->sel->tags = arg->ui & TAGMASK;
+		setclienttagprop(c);
 		focus(NULL);
 		arrange(selmon);
 	}
@@ -3326,6 +3729,7 @@ toggletag(const Arg *arg)
 	newtags = selmon->sel->tags ^ (arg->ui & TAGMASK);
 	if (newtags) {
 		selmon->sel->tags = newtags;
+		setclienttagprop(selmon->sel);
 		focus(NULL);
 		arrange(selmon);
 	}
@@ -3725,49 +4129,9 @@ updatesizehints(Client *c)
 void
 updatestatus(void)
 {
-	//if (!gettextprop(root, XA_WM_NAME, stext, sizeof(stext)))
-		//strcpy(stext, "dwm-"VERSION);
-	//char text[768];
-	if (!gettextprop(root, XA_WM_NAME, stext, sizeof(stext))) {
- 		strcpy(stext, "dwm-"VERSION);
-		statusw = TEXTW(stext) - lrpad + 2;
-	} else {
-		char *text, *s, ch;
-
-		statusw  = 0;
-		for (text = s = stext; *s; s++) {
-			if ((unsigned char)(*s) < ' ') {
-				ch = *s;
-				*s = '\0';
-				statusw += TEXTW(text) - lrpad;
-				*s = ch;
-				text = s + 1;
-			}
-		}
-		//statusw += TEXTW(text) - lrpad + 2;
-		statusw += TEXTW(text);
-
-	}
-	//if (!gettextprop(root, XA_WM_NAME, stext, sizeof(stext))) {
-	//	strcpy(stext, "dwm-"VERSION);
-		//estextl[0] = '\0';
-		//estextr[0] = '\0';
-	//}
-	//else {
-	//	char *l = strchr(text, statussep);
-	//	if (l) {
-	//		*l = '\0'; l++;
-	//		strncpy(estextl, l, sizeof(estextl) - 1);
-	//	} else
-	//		estextl[0] = '\0';
-	//	char *r = strchr(estextl, statussep);
-	//	if (r) {
-	//		*r = '\0'; r++;
-	//		strncpy(estextr, r, sizeof(estextr) - 1);
-	//	} else
-	//		estextr[0] = '\0';
-	//	strncpy(stext, text, sizeof(stext) - 1);
-	//}
+	flushimgcache();
+	if (!gettextprop(root, XA_WM_NAME, stext, sizeof(stext)))
+		strcpy(stext, "dwm-"VERSION);
 	drawbar(selmon);
 }
 
@@ -3788,8 +4152,10 @@ updatewindowtype(Client *c)
 
 	if (state == netatom[NetWMFullscreen])
 		setfullscreen(c, 1);
-	if (wtype == netatom[NetWMWindowTypeDialog])
+	if (wtype == netatom[NetWMWindowTypeDialog]) {
+		c->iscentered = 1;
 		c->isfloating = 1;
+	}
 }
 
 void
@@ -4127,83 +4493,574 @@ zoom(const Arg *arg)
 //}
 
 void
-previewallwin(){
-	Monitor *m = selmon;
-	Client *c, *focus_c = NULL;
-	unsigned int n;
-	for (n = 0, c = m->clients; c; c = c->next){
-		if (ispanel(c))
-			continue;
-		n++;
-		c->pre.orig_image = getwindowximage(c);
-	}
-	if (n == 0)
-		return;
-	setpreviewwindowsizepositions(n, m, 60, 15);
-	XEvent event;
-	for(c = m->clients; c; c = c->next){
-		if (ispanel(c))
-			continue;
-		if (!c->pre.win)
-			c->pre.win = XCreateSimpleWindow(dpy, root, c->pre.x, c->pre.y, c->pre.scaled_image->width, c->pre.scaled_image->height, 1, BlackPixel(dpy, screen), WhitePixel(dpy, screen));
-		else
-			XMoveResizeWindow(dpy, c->pre.win, c->pre.x, c->pre.y, c->pre.scaled_image->width, c->pre.scaled_image->height);
-		XSetWindowBorder(dpy, c->pre.win, scheme[SchemeNorm][ColBorder].pixel);
-		XUnmapWindow(dpy, c->win);
-		if (c->pre.win){
-			XSelectInput(dpy, c->pre.win, ButtonPress | EnterWindowMask | LeaveWindowMask);
-			XMapWindow(dpy, c->pre.win);
-			GC gc = XCreateGC(dpy, c->pre.win, 0, NULL);
-			XPutImage(dpy, c->pre.win, gc, c->pre.scaled_image, 0, 0, 0, 0, c->pre.scaled_image->width, c->pre.scaled_image->height);
-		}
-	}
-	/* raise panel above preview windows */
-	for(c = m->clients; c; c = c->next)
-		if (ispanel(c)) {
-			XMapWindow(dpy, c->win);
-			XRaiseWindow(dpy, c->win);
-		}
-	while (1) {
-		XNextEvent(dpy, &event);
-		if (event.type == ButtonPress)
-			if (event.xbutton.button == Button1){
-				for(c = m->clients; c; c = c->next){
-					if (ispanel(c))
-						continue;
-					XUnmapWindow(dpy, c->pre.win);
-					if (event.xbutton.window == c->pre.win){
-						selmon->seltags ^= 1;
-						m->tagset[selmon->seltags] = c->tags;
-						focus_c = c;
-						focus(NULL);
-					}
-					XMapWindow(dpy, c->win);
-					XDestroyImage(c->pre.orig_image);
-					XDestroyImage(c->pre.scaled_image);
-				}
-				break;
-			}
-		if (event.type == EnterNotify)
-			for(c = m->clients; c; c = c->next){
-				if (ispanel(c))
-					continue;
-				if (event.xcrossing.window == c->pre.win){
-					XSetWindowBorder(dpy, c->pre.win, scheme[SchemeSel][ColBorder].pixel);
-					break;
-				}
-			}
-		if (event.type == LeaveNotify)
-			for(c = m->clients; c; c = c->next){
-				if (ispanel(c))
-					continue;
-				if (event.xcrossing.window == c->pre.win){
-					XSetWindowBorder(dpy, c->pre.win, scheme[SchemeNorm][ColBorder].pixel);
-					break;
-				}
-			}
-	}
-	arrange(m);
-	focus(focus_c);
+previewallwin(const Arg *arg){
+    (void)arg;
+    Monitor *m = selmon;
+    Client *c, *focus_c = NULL;
+    unsigned int n;
+
+    for (n = 0, c = m->clients; c; c = c->next){
+        if (ispanel(c)) continue;
+        n++;
+        c->pre.orig_image = getwindowximage(c);
+    }
+    if (n == 0) return;
+
+    /* ── search bar ── */
+    int sb_w = 500;
+    int sb_h = 44;
+    int sb_x = m->wx + (m->ww - sb_w) / 2;
+    int sb_y = m->wy + 24;
+
+    XSetWindowAttributes swa;
+    swa.override_redirect = True;
+    swa.background_pixel  = 0xffffff;
+    swa.event_mask        = KeyPressMask | ExposureMask | ButtonPressMask;
+    Window searchwin = XCreateWindow(dpy, root,
+        sb_x, sb_y, sb_w, sb_h, 2,
+        DefaultDepth(dpy, screen), InputOutput,
+        DefaultVisual(dpy, screen),
+        CWOverrideRedirect | CWBackPixel | CWEventMask, &swa);
+
+    char search_buf[128] = "";
+    int  search_len  = 0;
+    int  cursor_vis  = 1;  /* blink state */
+    int  search_focused = 0; /* becomes 1 after first click on searchwin */
+
+    XMapRaised(dpy, searchwin);
+
+    GC sgc = XCreateGC(dpy, searchwin, 0, NULL);
+
+    /* try larger fonts first */
+    XFontStruct *font = XLoadQueryFont(dpy,
+        "-*-dejavu sans-medium-r-*-*-16-*-*-*-*-*-*-*");
+    if (!font) font = XLoadQueryFont(dpy,
+        "-*-liberation sans-medium-r-*-*-16-*-*-*-*-*-*-*");
+    if (!font) font = XLoadQueryFont(dpy,
+        "-*-helvetica-medium-r-*-*-16-*-*-*-*-*-*-*");
+    if (!font) font = XLoadQueryFont(dpy, "fixed");
+
+    /* blink timer via X11 timeout — we use select() on X fd */
+    int xfd = ConnectionNumber(dpy);
+
+    #define DRAW_SEARCHBAR() do { \
+        XSetForeground(dpy, sgc, 0xffffff); \
+        XFillRectangle(dpy, searchwin, sgc, 0, 0, sb_w, sb_h); \
+        XSetForeground(dpy, sgc, search_focused ? 0x00cc66 : 0xaaaaaa); \
+        XDrawRectangle(dpy, searchwin, sgc, 0, 0, sb_w-1, sb_h-1); \
+        if (font) XSetFont(dpy, sgc, font->fid); \
+        int _pad = 14; \
+        if (search_len == 0 && !search_focused) { \
+            XSetForeground(dpy, sgc, 0xbbbbbb); \
+            XDrawString(dpy, searchwin, sgc, _pad, sb_h/2+6, \
+                "Click to search windows...", 26); \
+        } else if (search_len == 0 && search_focused) { \
+            XSetForeground(dpy, sgc, 0xcccccc); \
+            XDrawString(dpy, searchwin, sgc, _pad, sb_h/2+6, \
+                "Type a window name...", 21); \
+            if (cursor_vis) { \
+                XSetForeground(dpy, sgc, 0x00cc66); \
+                XDrawLine(dpy, searchwin, sgc, _pad, 8, _pad, sb_h-8); \
+            } \
+        } else { \
+            XSetForeground(dpy, sgc, 0x111111); \
+            XDrawString(dpy, searchwin, sgc, _pad, sb_h/2+6, \
+                search_buf, search_len); \
+            if (cursor_vis) { \
+                int _cw2 = font ? XTextWidth(font, search_buf, search_len) \
+                                : search_len * 9; \
+                XSetForeground(dpy, sgc, 0x00cc66); \
+                XDrawLine(dpy, searchwin, sgc, \
+                    _pad + _cw2 + 2, 8, \
+                    _pad + _cw2 + 2, sb_h-8); \
+            } \
+        } \
+    } while(0)
+
+    DRAW_SEARCHBAR();
+
+    /* grid area */
+    int grid_top    = sb_y + sb_h + 20;
+    int grid_bottom = m->wy + m->wh - 60;
+
+    XRenderPictFormat *scrfmt =
+        XRenderFindVisualFormat(dpy, DefaultVisual(dpy, screen));
+
+    #define BAR_H 56
+
+    /* ── draw one preview window ── */
+    #define REDRAW_CLIENT(cl) do { \
+        if (!(cl)->pre.win || !(cl)->pre.scaled_image) break; \
+        int _pw   = (cl)->pre.scaled_image->width; \
+        int _ph   = (cl)->pre.scaled_image->height; \
+        int _img_h = _ph - BAR_H; \
+        if (_img_h < 1) _img_h = 1; \
+        GC _gc = XCreateGC(dpy, (cl)->pre.win, 0, NULL); \
+        /* screenshot */ \
+        XPutImage(dpy, (cl)->pre.win, _gc, (cl)->pre.scaled_image, \
+            0, 0, 0, 0, _pw, _img_h); \
+        /* dark bottom bar */ \
+        XSetForeground(dpy, _gc, 0x141414); \
+        XFillRectangle(dpy, (cl)->pre.win, _gc, 0, _img_h, _pw, BAR_H); \
+        XSetForeground(dpy, _gc, 0x2c2c2c); \
+        XDrawLine(dpy, (cl)->pre.win, _gc, 0, _img_h, _pw, _img_h); \
+        /* icon + title centered */ \
+        int _ico_sz  = 30; \
+        int _has_ico = ((cl)->icon && (cl)->icw > 0 && (cl)->ich > 0) ? 1 : 0; \
+        char _ttl[64]; \
+        snprintf(_ttl, sizeof(_ttl), "%.28s", (cl)->name); \
+        int _text_w = (font && strlen(_ttl) > 0) \
+            ? XTextWidth(font, _ttl, strlen(_ttl)) : 0; \
+        int _gap2   = _has_ico ? 10 : 0; \
+        int _total2 = (_has_ico ? _ico_sz : 0) + _gap2 + _text_w; \
+        int _sx2    = (_pw - _total2) / 2; \
+        if (_sx2 < 6) _sx2 = 6; \
+        int _cy2    = _img_h + BAR_H / 2; \
+        /* scale icon with XRender transform */ \
+        if (_has_ico) { \
+            Pixmap _pm2 = XCreatePixmap(dpy, root, _ico_sz, _ico_sz, \
+                DefaultDepth(dpy, screen)); \
+            XRenderPictFormat *_vf = XRenderFindVisualFormat(dpy, \
+                DefaultVisual(dpy, screen)); \
+            Picture _pd = XRenderCreatePicture(dpy, _pm2, _vf, 0, NULL); \
+            XRenderColor _bg2 = {0, 0, 0, 0}; \
+            XRenderFillRectangle(dpy, PictOpSrc, _pd, &_bg2, \
+                0, 0, _ico_sz, _ico_sz); \
+            XTransform _xf2; \
+            memset(&_xf2, 0, sizeof(_xf2)); \
+            _xf2.matrix[0][0] = XDoubleToFixed((double)(cl)->icw / _ico_sz); \
+            _xf2.matrix[1][1] = XDoubleToFixed((double)(cl)->ich / _ico_sz); \
+            _xf2.matrix[2][2] = XDoubleToFixed(1.0); \
+            XRenderSetPictureTransform(dpy, (cl)->icon, &_xf2); \
+            XRenderComposite(dpy, PictOpOver, (cl)->icon, None, _pd, \
+                0, 0, 0, 0, 0, 0, _ico_sz, _ico_sz); \
+            XTransform _id2; memset(&_id2, 0, sizeof(_id2)); \
+            _id2.matrix[0][0] = _id2.matrix[1][1] = _id2.matrix[2][2] = \
+                XDoubleToFixed(1.0); \
+            XRenderSetPictureTransform(dpy, (cl)->icon, &_id2); \
+            Picture _pw2 = XRenderCreatePicture(dpy, (cl)->pre.win, \
+                scrfmt, 0, NULL); \
+            XRenderComposite(dpy, PictOpOver, _pd, None, _pw2, \
+                0, 0, 0, 0, \
+                _sx2, _cy2 - _ico_sz / 2, \
+                _ico_sz, _ico_sz); \
+            XRenderFreePicture(dpy, _pd); \
+            XRenderFreePicture(dpy, _pw2); \
+            XFreePixmap(dpy, _pm2); \
+            _sx2 += _ico_sz + _gap2; \
+        } \
+        /* title text */ \
+        if (font && _text_w > 0) { \
+            int _ty2 = _cy2 + (font->ascent - font->descent) / 2; \
+            XSetFont(dpy, _gc, font->fid); \
+            XSetForeground(dpy, _gc, 0x000000); \
+            XDrawString(dpy, (cl)->pre.win, _gc, \
+                _sx2+1, _ty2+1, _ttl, strlen(_ttl)); \
+            XSetForeground(dpy, _gc, 0xeeeeee); \
+            XDrawString(dpy, (cl)->pre.win, _gc, \
+                _sx2, _ty2, _ttl, strlen(_ttl)); \
+        } \
+        XFreeGC(dpy, _gc); \
+    } while(0)
+
+    /* max fraction of screen a single window may occupy */
+    #define MAX_SINGLE_W 0.55
+    #define MAX_SINGLE_H 0.55
+
+    /* ── relayout visible windows ── */
+    #define RELAYOUT_VISIBLE(filter_expr) do { \
+        unsigned int _nvis = 0; \
+        for (c = m->clients; c; c = c->next) { \
+            if (ispanel(c) || !c->pre.win || !c->pre.orig_image) continue; \
+            if (filter_expr) _nvis++; \
+        } \
+        /* hide non-matching */ \
+        for (c = m->clients; c; c = c->next) { \
+            if (ispanel(c) || !c->pre.win) continue; \
+            if (!(filter_expr)) XUnmapWindow(dpy, c->pre.win); \
+        } \
+        if (_nvis > 0) { \
+            unsigned int _cols = 1; \
+            while (_cols * _cols < _nvis) _cols++; \
+            unsigned int _rows = (_nvis + _cols - 1) / _cols; \
+            int _gap3 = 16; \
+            int _avw3 = m->ww - 60; \
+            int _avh3 = grid_bottom - grid_top; \
+            int _cw3, _img_h3, _ch3; \
+            if (_nvis == 1) { \
+                /* single window: cap size */ \
+                _cw3   = (int)(m->ww * MAX_SINGLE_W); \
+                _img_h3 = _cw3 * 9 / 16; \
+                _ch3   = _img_h3 + BAR_H; \
+                if (_ch3 > (int)(m->wh * MAX_SINGLE_H)) { \
+                    _ch3   = (int)(m->wh * MAX_SINGLE_H); \
+                    _img_h3 = _ch3 - BAR_H; \
+                    _cw3   = _img_h3 * 16 / 9; \
+                } \
+            } else { \
+                _cw3   = (_avw3 - (int)(_cols-1)*_gap3) / (int)_cols; \
+                _img_h3 = _cw3 * 9 / 16; \
+                _ch3   = _img_h3 + BAR_H; \
+                int _need3 = (int)_rows*_ch3 + (int)(_rows-1)*_gap3; \
+                if (_need3 > _avh3) { \
+                    _ch3   = (_avh3 - (int)(_rows-1)*_gap3) / (int)_rows; \
+                    _img_h3 = _ch3 - BAR_H; \
+                    if (_img_h3 < 40) _img_h3 = 40; \
+                    _ch3   = _img_h3 + BAR_H; \
+                    _cw3   = _img_h3 * 16 / 9; \
+                } \
+            } \
+            if (_cw3 < 120) _cw3 = 120; \
+            int _tw3 = (int)_cols*_cw3 + (int)(_cols-1)*_gap3; \
+            int _th3 = (int)_rows*_ch3 + (int)(_rows-1)*_gap3; \
+            int _sx3 = m->wx + (m->ww - _tw3) / 2; \
+            int _sy3 = grid_top + (grid_bottom - grid_top - _th3) / 2; \
+            if (_sy3 < grid_top) _sy3 = grid_top; \
+            unsigned int _vi3 = 0; \
+            for (c = m->clients; c; c = c->next) { \
+                if (ispanel(c) || !c->pre.win || !c->pre.orig_image) continue; \
+                if (!(filter_expr)) continue; \
+                int _col3 = (int)(_vi3 % _cols); \
+                int _row3 = (int)(_vi3 / _cols); \
+                int _nx3  = _sx3 + _col3 * (_cw3 + _gap3); \
+                int _ny3  = _sy3 + _row3 * (_ch3 + _gap3); \
+                XMoveResizeWindow(dpy, c->pre.win, _nx3, _ny3, _cw3, _ch3); \
+                if (c->pre.scaled_image) { \
+                    XDestroyImage(c->pre.scaled_image); \
+                    c->pre.scaled_image = NULL; \
+                } \
+                c->pre.scaled_image = scaleimagetofit( \
+                    c->pre.orig_image, \
+                    (unsigned int)_cw3, \
+                    (unsigned int)_ch3); \
+                XMapWindow(dpy, c->pre.win); \
+                REDRAW_CLIENT(c); \
+                _vi3++; \
+            } \
+        } \
+    } while(0)
+
+    /* ── create preview windows ── */
+    for (c = m->clients; c; c = c->next){
+        if (ispanel(c) || !c->pre.orig_image) continue;
+        XSetWindowAttributes cwa;
+        cwa.override_redirect = True;
+        cwa.background_pixel  = 0x111111;
+        cwa.event_mask        = ButtonPress | EnterWindowMask | LeaveWindowMask;
+        if (!c->pre.win)
+            c->pre.win = XCreateWindow(dpy, root, 0, 0, 100, 80, 2,
+                DefaultDepth(dpy, screen), InputOutput,
+                DefaultVisual(dpy, screen),
+                CWOverrideRedirect | CWBackPixel | CWEventMask, &cwa);
+        XSetWindowBorder(dpy, c->pre.win, scheme[SchemeNorm][ColBorder].pixel);
+        XUnmapWindow(dpy, c->win);
+        XSelectInput(dpy, c->pre.win,
+            ButtonPress | EnterWindowMask | LeaveWindowMask);
+    }
+
+    /* initial layout */
+    RELAYOUT_VISIBLE(1);
+
+    /* raise panel and search bar */
+    for (c = m->clients; c; c = c->next)
+        if (ispanel(c)) { XMapWindow(dpy, c->win); XRaiseWindow(dpy, c->win); }
+    XRaiseWindow(dpy, searchwin);
+
+    XGrabKeyboard(dpy, root, True, GrabModeAsync, GrabModeAsync, CurrentTime);
+    XGrabPointer(dpy, root, True,
+        ButtonPressMask | EnterWindowMask | LeaveWindowMask,
+        GrabModeAsync, GrabModeAsync, None, None, CurrentTime);
+
+    XEvent event;
+    XSync(dpy, False);
+    while (XCheckMaskEvent(dpy, ButtonPressMask | KeyPressMask, &event));
+
+    int done = 0;
+    struct timeval tv;
+    fd_set fds;
+
+    while (!done) {
+        /* blink cursor every 500ms when search is focused */
+        FD_ZERO(&fds);
+        FD_SET(xfd, &fds);
+        tv.tv_sec  = 0;
+        tv.tv_usec = 500000; /* 500ms */
+
+        int ready = select(xfd + 1, &fds, NULL, NULL, &tv);
+
+        if (ready == 0) {
+            /* timeout: blink cursor */
+            if (search_focused) {
+                cursor_vis = !cursor_vis;
+                DRAW_SEARCHBAR();
+                XRaiseWindow(dpy, searchwin);
+                XFlush(dpy);
+            }
+            continue;
+        }
+
+        while (XPending(dpy)) {
+            XNextEvent(dpy, &event);
+            switch (event.type) {
+
+            case Expose:
+                if (event.xexpose.window == searchwin) {
+                    DRAW_SEARCHBAR();
+                    XRaiseWindow(dpy, searchwin);
+                } else {
+                    for (c = m->clients; c; c = c->next) {
+                        if (ispanel(c)) continue;
+                        if (c->pre.win == event.xexpose.window) {
+                            REDRAW_CLIENT(c); break;
+                        }
+                    }
+                }
+                break;
+
+            case KeyPress: {
+                KeySym ks = XKeycodeToKeysym(dpy, event.xkey.keycode, 0);
+                cursor_vis = 1; /* reset blink on keypress */
+                if (ks == XK_Escape) {
+                    done = 1;
+                } else if (ks == XK_BackSpace) {
+                    if (search_len > 0) search_buf[--search_len] = '\0';
+                    DRAW_SEARCHBAR();
+                    XRaiseWindow(dpy, searchwin);
+                    if (search_len == 0)
+                        RELAYOUT_VISIBLE(1);
+                    else
+                        RELAYOUT_VISIBLE(
+                            strcasestr(c->name, search_buf) != NULL);
+                    XRaiseWindow(dpy, searchwin);
+                } else if (ks == XK_Return) {
+                    Client *match = NULL;
+                    for (c = m->clients; c; c = c->next) {
+                        if (ispanel(c) || !c->pre.win) continue;
+                        if (search_len == 0 ||
+                            strcasestr(c->name, search_buf)) {
+                            match = c; break;
+                        }
+                    }
+                    if (match) {
+                        for (c = m->clients; c; c = c->next) {
+                            if (ispanel(c)) continue;
+                            if (c->pre.win) XUnmapWindow(dpy, c->pre.win);
+                            XMapWindow(dpy, c->win);
+                            if (c->pre.orig_image)
+                                { XDestroyImage(c->pre.orig_image);
+                                  c->pre.orig_image = NULL; }
+                            if (c->pre.scaled_image)
+                                { XDestroyImage(c->pre.scaled_image);
+                                  c->pre.scaled_image = NULL; }
+                        }
+                        selmon->seltags ^= 1;
+                        m->tagset[selmon->seltags] = match->tags;
+                        focus_c = match;
+                        focus(NULL);
+                    }
+                    done = 1;
+                } else {
+                    char buf[8] = {0};
+                    XLookupString(&event.xkey, buf, sizeof(buf)-1, &ks, NULL);
+                    if (buf[0] >= ' ' && buf[0] < 127 &&
+                        search_len < (int)sizeof(search_buf)-1) {
+                        search_buf[search_len++] = buf[0];
+                        search_buf[search_len]   = '\0';
+                        search_focused = 1;
+                        DRAW_SEARCHBAR();
+                        XRaiseWindow(dpy, searchwin);
+                        RELAYOUT_VISIBLE(
+                            strcasestr(c->name, search_buf) != NULL);
+                        XRaiseWindow(dpy, searchwin);
+                    }
+                }
+                break;
+            }
+
+            case ButtonPress:
+                if (event.xbutton.window == searchwin) {
+                    search_focused = 1;
+                    cursor_vis = 1;
+                    DRAW_SEARCHBAR();
+                    XRaiseWindow(dpy, searchwin);
+                    break;
+                }
+                if (event.xbutton.button == Button1) {
+                    int _clicked_preview = False;
+                    for (c = m->clients; c; c = c->next){
+                        if (ispanel(c)) continue;
+                        if (event.xbutton.window == c->pre.win)
+                            _clicked_preview = True;
+                    }
+                    for (c = m->clients; c; c = c->next){
+                        if (ispanel(c)) continue;
+                        if (c->pre.win) XUnmapWindow(dpy, c->pre.win);
+                        if (event.xbutton.window == c->pre.win){
+                            selmon->seltags ^= 1;
+                            m->tagset[selmon->seltags] = c->tags;
+                            focus_c = c;
+                            focus(NULL);
+                        }
+                        XMapWindow(dpy, c->win);
+                        if (c->pre.orig_image)
+                            { XDestroyImage(c->pre.orig_image);
+                              c->pre.orig_image = NULL; }
+                        if (c->pre.scaled_image)
+                            { XDestroyImage(c->pre.scaled_image);
+                              c->pre.scaled_image = NULL; }
+                    }
+                    if (_clicked_preview) done = 1;
+                    /* click outside — just unfocus search */
+                    else { search_focused = 0; DRAW_SEARCHBAR(); }
+                } else if (event.xbutton.button == Button3) {
+                    done = 1;
+                }
+                break;
+
+            case EnterNotify:
+                for (c = m->clients; c; c = c->next){
+                    if (ispanel(c)) continue;
+                    if (event.xcrossing.window == c->pre.win){
+                        XSetWindowBorder(dpy, c->pre.win,
+                            scheme[SchemeSel][ColBorder].pixel);
+                        break;
+                    }
+                }
+                break;
+
+            case LeaveNotify:
+                for (c = m->clients; c; c = c->next){
+                    if (ispanel(c)) continue;
+                    if (event.xcrossing.window == c->pre.win){
+                        XSetWindowBorder(dpy, c->pre.win,
+                            scheme[SchemeNorm][ColBorder].pixel);
+                        break;
+                    }
+                }
+                break;
+            }
+        }
+    }
+
+    #undef DRAW_SEARCHBAR
+    #undef REDRAW_CLIENT
+    #undef RELAYOUT_VISIBLE
+    #undef BAR_H
+    #undef MAX_SINGLE_W
+    #undef MAX_SINGLE_H
+
+    if (font) XFreeFont(dpy, font);
+    XFreeGC(dpy, sgc);
+    XDestroyWindow(dpy, searchwin);
+    XUngrabKeyboard(dpy, CurrentTime);
+    XUngrabPointer(dpy, CurrentTime);
+
+    if (!focus_c) {
+        for (c = m->clients; c; c = c->next){
+            if (ispanel(c)) continue;
+            if (c->pre.win) XUnmapWindow(dpy, c->pre.win);
+            XMapWindow(dpy, c->win);
+            if (c->pre.orig_image)
+                { XDestroyImage(c->pre.orig_image);
+                  c->pre.orig_image = NULL; }
+            if (c->pre.scaled_image)
+                { XDestroyImage(c->pre.scaled_image);
+                  c->pre.scaled_image = NULL; }
+        }
+    }
+
+    arrange(m);
+    focus(focus_c);
+    XSync(dpy, True);
+    run_preview = 0;
+}
+
+//void
+//previewallwin(const Arg *arg){
+//	(void)arg;
+//	Monitor *m = selmon;
+//	Client *c, *focus_c = NULL;
+//	unsigned int n;
+//	for (n = 0, c = m->clients; c; c = c->next){
+//		if (ispanel(c))
+//			continue;
+//		n++;
+//		c->pre.orig_image = getwindowximage(c);
+//	}
+//	if (n == 0)
+//		return;
+//	setpreviewwindowsizepositions(n, m, 60, 15);
+//	XEvent event;
+//	for(c = m->clients; c; c = c->next){
+//		if (ispanel(c))
+//			continue;
+//		if (!c->pre.win)
+//			c->pre.win = XCreateSimpleWindow(dpy, root, c->pre.x, c->pre.y, c->pre.scaled_image->width, c->pre.scaled_image->height, 1, BlackPixel(dpy, screen), WhitePixel(dpy, screen));
+//		else
+//			XMoveResizeWindow(dpy, c->pre.win, c->pre.x, c->pre.y, c->pre.scaled_image->width, c->pre.scaled_image->height);
+//		XSetWindowBorder(dpy, c->pre.win, scheme[SchemeNorm][ColBorder].pixel);
+//		XUnmapWindow(dpy, c->win);
+//		if (c->pre.win){
+//			XSelectInput(dpy, c->pre.win, ButtonPress | EnterWindowMask | LeaveWindowMask);
+//			XMapWindow(dpy, c->pre.win);
+//			GC gc = XCreateGC(dpy, c->pre.win, 0, NULL);
+//			XPutImage(dpy, c->pre.win, gc, c->pre.scaled_image, 0, 0, 0, 0, c->pre.scaled_image->width, c->pre.scaled_image->height);
+//		}
+//	}
+//	/* raise panel above preview windows */
+//	for(c = m->clients; c; c = c->next)
+//		if (ispanel(c)) {
+//			XMapWindow(dpy, c->win);
+//			XRaiseWindow(dpy, c->win);
+//		}
+//	while (1) {
+//		XNextEvent(dpy, &event);
+//		if (event.type == ButtonPress)
+//			if (event.xbutton.button == Button1){
+//				for(c = m->clients; c; c = c->next){
+//					if (ispanel(c))
+//						continue;
+//					XUnmapWindow(dpy, c->pre.win);
+//					if (event.xbutton.window == c->pre.win){
+//						selmon->seltags ^= 1;
+//						m->tagset[selmon->seltags] = c->tags;
+//						focus_c = c;
+//						focus(NULL);
+//					}
+//					XMapWindow(dpy, c->win);
+//					XDestroyImage(c->pre.orig_image);
+//					XDestroyImage(c->pre.scaled_image);
+//				}
+//				break;
+//			}
+//		if (event.type == EnterNotify)
+//			for(c = m->clients; c; c = c->next){
+//				if (ispanel(c))
+//					continue;
+//				if (event.xcrossing.window == c->pre.win){
+//					XSetWindowBorder(dpy, c->pre.win, scheme[SchemeSel][ColBorder].pixel);
+//					break;
+//				}
+//			}
+//		if (event.type == LeaveNotify)
+//			for(c = m->clients; c; c = c->next){
+//				if (ispanel(c))
+//					continue;
+//				if (event.xcrossing.window == c->pre.win){
+//					XSetWindowBorder(dpy, c->pre.win, scheme[SchemeNorm][ColBorder].pixel);
+//					break;
+//				}
+//			}
+//	}
+//	arrange(m);
+//	focus(focus_c);
+//}
+
+static void
+previewallwinwrap(const Arg *arg)
+{
+    (void)arg;
+    previewallwin(NULL);
 }
 
 //void
@@ -4349,80 +5206,230 @@ previewallwin(){
 //		c->pre.y += cy;
 //}
 
-void
-setpreviewwindowsizepositions(unsigned int n, Monitor *m, unsigned int gappo, unsigned int gappi){
-	unsigned int i, j;
-	unsigned int cx, cy, cw, ch, cmaxh;
-	unsigned int cols, rows;
-	Client *c, *tmpc, *first = NULL, *second = NULL;
+//void
+//setpreviewwindowsizepositions(unsigned int n, Monitor *m, unsigned int gappo, unsigned int gappi){
+//	unsigned int i, j;
+//	unsigned int cx, cy, cw, ch, cmaxh;
+//	unsigned int cols, rows;
+//	Client *c, *tmpc, *first = NULL, *second = NULL;
+//
+//	/* find first non-panel client */
+//	for (c = m->clients; c; c = c->next)
+//		if (!ispanel(c)) { first = c; break; }
+//
+//	if (n == 1) {
+//		cw = (m->ww - 2 * gappo) * 0.8;
+//		ch = (m->wh - 2 * gappo) * 0.9;
+//		first->pre.scaled_image = scaledownimage(first->pre.orig_image, cw, ch);
+//		first->pre.x = m->mx + (m->mw - first->pre.scaled_image->width) / 2;
+//		first->pre.y = m->my + (m->mh - first->pre.scaled_image->height) / 2;
+//		return;
+//	}
+//	if (n == 2) {
+//		/* find second non-panel client */
+//		for (c = first->next; c; c = c->next)
+//			if (!ispanel(c)) { second = c; break; }
+//		cw = (m->ww - 2 * gappo - gappi) / 2;
+//		ch = (m->wh - 2 * gappo) * 0.7;
+//		first->pre.scaled_image = scaledownimage(first->pre.orig_image, cw, ch);
+//		second->pre.scaled_image = scaledownimage(second->pre.orig_image, cw, ch);
+//		first->pre.x = m->mx + (m->mw - first->pre.scaled_image->width - gappi - second->pre.scaled_image->width) / 2;
+//		first->pre.y = m->my + (m->mh - first->pre.scaled_image->height) / 2;
+//		second->pre.x = first->pre.x + first->pre.scaled_image->width + gappi;
+//		second->pre.y = m->my + (m->mh - second->pre.scaled_image->height) / 2;
+//		return;
+//	}
+//	for (cols = 0; cols <= n / 2; cols++)
+//		if (cols * cols >= n)
+//			break;
+//	rows = (cols && (cols - 1) * cols >= n) ? cols - 1 : cols;
+//	ch = (m->wh - 2 * gappo) / rows;
+//	cw = (m->ww - 2 * gappo) / cols;
+//	c = first;
+//	cy = 0;
+//	for (i = 0; i < rows; i++) {
+//		cx = 0;
+//		cmaxh = 0;
+//		tmpc = c;
+//		for (j = 0; j < cols; j++) {
+//			if (!c)
+//				break;
+//			if (ispanel(c)) { j--; c = c->next; continue; }
+//			c->pre.scaled_image = scaledownimage(c->pre.orig_image, cw, ch);
+//			c->pre.x = cx;
+//			cmaxh = c->pre.scaled_image->height > cmaxh ? c->pre.scaled_image->height : cmaxh;
+//			cx += c->pre.scaled_image->width + gappi;
+//			c = c->next;
+//		}
+//		c = tmpc;
+//		cx = m->wx + (m->ww - cx) / 2;
+//		for (j = 0; j < cols; j++) {
+//			if (!c)
+//				break;
+//			if (ispanel(c)) { j--; c = c->next; continue; }
+//			c->pre.x += cx;
+//			c->pre.y = cy + (cmaxh - c->pre.scaled_image->height) / 2;
+//			c = c->next;
+//		}
+//		cy += cmaxh + gappi;
+//	}
+//	cy = m->wy + (m->wh - cy) / 2;
+//	for (c = m->clients; c; c = c->next) {
+//		if (ispanel(c))
+//			continue;
+//		c->pre.y += cy;
+//	}
+//}
 
-	/* find first non-panel client */
-	for (c = m->clients; c; c = c->next)
-		if (!ispanel(c)) { first = c; break; }
-
-	if (n == 1) {
-		cw = (m->ww - 2 * gappo) * 0.8;
-		ch = (m->wh - 2 * gappo) * 0.9;
-		first->pre.scaled_image = scaledownimage(first->pre.orig_image, cw, ch);
-		first->pre.x = m->mx + (m->mw - first->pre.scaled_image->width) / 2;
-		first->pre.y = m->my + (m->mh - first->pre.scaled_image->height) / 2;
-		return;
-	}
-	if (n == 2) {
-		/* find second non-panel client */
-		for (c = first->next; c; c = c->next)
-			if (!ispanel(c)) { second = c; break; }
-		cw = (m->ww - 2 * gappo - gappi) / 2;
-		ch = (m->wh - 2 * gappo) * 0.7;
-		first->pre.scaled_image = scaledownimage(first->pre.orig_image, cw, ch);
-		second->pre.scaled_image = scaledownimage(second->pre.orig_image, cw, ch);
-		first->pre.x = m->mx + (m->mw - first->pre.scaled_image->width - gappi - second->pre.scaled_image->width) / 2;
-		first->pre.y = m->my + (m->mh - first->pre.scaled_image->height) / 2;
-		second->pre.x = first->pre.x + first->pre.scaled_image->width + gappi;
-		second->pre.y = m->my + (m->mh - second->pre.scaled_image->height) / 2;
-		return;
-	}
-	for (cols = 0; cols <= n / 2; cols++)
-		if (cols * cols >= n)
-			break;
-	rows = (cols && (cols - 1) * cols >= n) ? cols - 1 : cols;
-	ch = (m->wh - 2 * gappo) / rows;
-	cw = (m->ww - 2 * gappo) / cols;
-	c = first;
-	cy = 0;
-	for (i = 0; i < rows; i++) {
-		cx = 0;
-		cmaxh = 0;
-		tmpc = c;
-		for (j = 0; j < cols; j++) {
-			if (!c)
-				break;
-			if (ispanel(c)) { j--; c = c->next; continue; }
-			c->pre.scaled_image = scaledownimage(c->pre.orig_image, cw, ch);
-			c->pre.x = cx;
-			cmaxh = c->pre.scaled_image->height > cmaxh ? c->pre.scaled_image->height : cmaxh;
-			cx += c->pre.scaled_image->width + gappi;
-			c = c->next;
+XImage*
+scaleimagetofit(XImage *orig_image, unsigned int tw, unsigned int th) {
+	XImage *scaled_image = XCreateImage(dpy, DefaultVisual(dpy, DefaultScreen(dpy)),
+			orig_image->depth,
+			ZPixmap, 0, NULL,
+			tw, th,
+			32, 0);
+	scaled_image->data = malloc(scaled_image->height * scaled_image->bytes_per_line);
+	for (unsigned int y = 0; y < th; y++) {
+		for (unsigned int x = 0; x < tw; x++) {
+			int orig_x = x * orig_image->width  / tw;
+			int orig_y = y * orig_image->height / th;
+			unsigned long pixel = XGetPixel(orig_image, orig_x, orig_y);
+			XPutPixel(scaled_image, x, y, pixel);
 		}
-		c = tmpc;
-		cx = m->wx + (m->ww - cx) / 2;
-		for (j = 0; j < cols; j++) {
-			if (!c)
-				break;
-			if (ispanel(c)) { j--; c = c->next; continue; }
-			c->pre.x += cx;
-			c->pre.y = cy + (cmaxh - c->pre.scaled_image->height) / 2;
-			c = c->next;
-		}
-		cy += cmaxh + gappi;
 	}
-	cy = m->wy + (m->wh - cy) / 2;
-	for (c = m->clients; c; c = c->next) {
-		if (ispanel(c))
-			continue;
-		c->pre.y += cy;
-	}
+	scaled_image->depth = orig_image->depth;
+	return scaled_image;
 }
+
+//void
+//setpreviewwindowsizepositions(unsigned int n, Monitor *m, unsigned int gappo, unsigned int gappi){
+//	unsigned int i, j;
+//	unsigned int cx, cy, cw, ch;
+//	unsigned int cols, rows;
+//	Client *c, *first = NULL, *second = NULL;
+//
+//	for (c = m->clients; c; c = c->next)
+//		if (!ispanel(c)) { first = c; break; }
+//
+//	if (n == 1) {
+//		cw = (m->ww - 2 * gappo) * 0.8;
+//		ch = (m->wh - 2 * gappo) * 0.9;
+//		first->pre.scaled_image = scaleimagetofit(first->pre.orig_image, cw, ch);
+//		first->pre.x = m->mx + (m->mw - cw) / 2;
+//		first->pre.y = m->my + (m->mh - ch) / 2;
+//		return;
+//	}
+//
+//	if (n == 2) {
+//		for (c = first->next; c; c = c->next)
+//			if (!ispanel(c)) { second = c; break; }
+//		cw = (m->ww - 2 * gappo - gappi) / 2;
+//		ch = (m->wh - 2 * gappo) * 0.7;
+//		first->pre.scaled_image  = scaleimagetofit(first->pre.orig_image,  cw, ch);
+//		second->pre.scaled_image = scaleimagetofit(second->pre.orig_image, cw, ch);
+//		first->pre.x  = m->mx + (m->mw - cw - gappi - cw) / 2;
+//		first->pre.y  = m->my + (m->mh - ch) / 2;
+//		second->pre.x = first->pre.x + cw + gappi;
+//		second->pre.y = first->pre.y;
+//		return;
+//	}
+//
+//	for (cols = 0; cols <= n / 2; cols++)
+//		if (cols * cols >= n)
+//			break;
+//	rows = (cols && (cols - 1) * cols >= n) ? cols - 1 : cols;
+//
+//	/* fixed cell size for all windows */
+//	cw = (m->ww - 2 * gappo - (cols - 1) * gappi) / cols;
+//	ch = (m->wh - 2 * gappo - (rows - 1) * gappi) / rows;
+//
+//	/* calculate total grid size for centering */
+//	unsigned int total_w = cols * cw + (cols - 1) * gappi;
+//	unsigned int total_h = rows * ch + (rows - 1) * gappi;
+//	unsigned int start_x = m->wx + (m->ww - total_w) / 2;
+//	unsigned int start_y = m->wy + (m->wh - total_h) / 2;
+//
+//	c = first;
+//	cy = start_y;
+//	for (i = 0; i < rows; i++) {
+//		cx = start_x;
+//		for (j = 0; j < cols; j++) {
+//			if (!c) break;
+//			if (ispanel(c)) { j--; c = c->next; continue; }
+//			/* force exact cell size */
+//			c->pre.scaled_image = scaleimagetofit(c->pre.orig_image, cw, ch);
+//			c->pre.x = cx;
+//			c->pre.y = cy;
+//			cx += cw + gappi;
+//			c = c->next;
+//			while (c && ispanel(c)) c = c->next;
+//		}
+//		cy += ch + gappi;
+//	}
+//}
+
+//void
+//setpreviewwindowsizepositions(unsigned int n, Monitor *m, unsigned int gappo, unsigned int gappi){
+//	unsigned int i, j;
+//	unsigned int cx, cy, cw, ch;
+//	unsigned int cols, rows;
+//	Client *c, *tmpc, *first = NULL, *second = NULL;
+//
+//	/* find first non-panel client */
+//	for (c = m->clients; c; c = c->next)
+//		if (!ispanel(c)) { first = c; break; }
+//
+//	if (n == 1) {
+//		cw = (m->ww - 2 * gappo) * 0.8;
+//		ch = (m->wh - 2 * gappo) * 0.9;
+//		first->pre.scaled_image = scaledownimage(first->pre.orig_image, cw, ch);
+//		first->pre.x = m->mx + (m->mw - first->pre.scaled_image->width) / 2;
+//		first->pre.y = m->my + (m->mh - first->pre.scaled_image->height) / 2;
+//		return;
+//	}
+//
+//	if (n == 2) {
+//		for (c = first->next; c; c = c->next)
+//			if (!ispanel(c)) { second = c; break; }
+//		cw = (m->ww - 2 * gappo - gappi) / 2;
+//		ch = (m->wh - 2 * gappo) * 0.7;
+//		first->pre.scaled_image  = scaledownimage(first->pre.orig_image,  cw, ch);
+//		second->pre.scaled_image = scaledownimage(second->pre.orig_image, cw, ch);
+//		first->pre.x  = m->mx + (m->mw - cw - gappi - cw) / 2;
+//		first->pre.y  = m->my + (m->mh - first->pre.scaled_image->height) / 2;
+//		second->pre.x = first->pre.x + cw + gappi;
+//		second->pre.y = m->my + (m->mh - second->pre.scaled_image->height) / 2;
+//		return;
+//	}
+//
+//	for (cols = 0; cols <= n / 2; cols++)
+//		if (cols * cols >= n)
+//			break;
+//	rows = (cols && (cols - 1) * cols >= n) ? cols - 1 : cols;
+//
+//	/* fixed cell size — all windows same width and height */
+//	cw = (m->ww - 2 * gappo - (cols - 1) * gappi) / cols;
+//	ch = (m->wh - 2 * gappo - (rows - 1) * gappi) / rows;
+//
+//	c = first;
+//	cy = m->wy + gappo;
+//	for (i = 0; i < rows; i++) {
+//		cx = m->wx + gappo;
+//		tmpc = c;
+//		for (j = 0; j < cols; j++) {
+//			if (!c) break;
+//			if (ispanel(c)) { j--; c = c->next; continue; }
+//			/* scale image to fixed cell size */
+//			c->pre.scaled_image = scaledownimage(c->pre.orig_image, cw, ch);
+//			/* center scaled image within the fixed cell */
+//			c->pre.x = cx + (cw - c->pre.scaled_image->width) / 2;
+//			c->pre.y = cy + (ch - c->pre.scaled_image->height) / 2;
+//			cx += cw + gappi;
+//			c = c->next;
+//		}
+//		cy += ch + gappi;
+//	}
+//}
 
 XImage*
 getwindowximage(Client *c) {
@@ -4454,30 +5461,30 @@ getwindowximage(Client *c) {
 	return temp;
 }
 
-XImage*
-scaledownimage(XImage *orig_image, unsigned int cw, unsigned int ch) {
-	int factor_w = orig_image->width / cw + 1;
-	int factor_h = orig_image->height / ch + 1;
-	int scale_factor = factor_w > factor_h ? factor_w : factor_h;
-	int scaled_width = orig_image->width / scale_factor;
-	int scaled_height = orig_image->height / scale_factor;
-	XImage *scaled_image = XCreateImage(dpy, DefaultVisual(dpy, DefaultScreen(dpy)),
-			orig_image->depth,
-			ZPixmap, 0, NULL,
-			scaled_width, scaled_height,
-			32, 0);
-	scaled_image->data = malloc(scaled_image->height * scaled_image->bytes_per_line);
-	for (int y = 0; y < scaled_height; y++) {
-		for (int x = 0; x < scaled_width; x++) {
-			int orig_x = x * scale_factor;
-			int orig_y = y * scale_factor;
-			unsigned long pixel = XGetPixel(orig_image, orig_x, orig_y);
-			XPutPixel(scaled_image, x, y, pixel);
-		}
-	}
-	scaled_image->depth = orig_image->depth;
-	return scaled_image;
-}
+//XImage*
+//scaledownimage(XImage *orig_image, unsigned int cw, unsigned int ch) {
+//	int factor_w = orig_image->width / cw + 1;
+//	int factor_h = orig_image->height / ch + 1;
+//	int scale_factor = factor_w > factor_h ? factor_w : factor_h;
+//	int scaled_width = orig_image->width / scale_factor;
+//	int scaled_height = orig_image->height / scale_factor;
+//	XImage *scaled_image = XCreateImage(dpy, DefaultVisual(dpy, DefaultScreen(dpy)),
+//			orig_image->depth,
+//			ZPixmap, 0, NULL,
+//			scaled_width, scaled_height,
+//			32, 0);
+//	scaled_image->data = malloc(scaled_image->height * scaled_image->bytes_per_line);
+//	for (int y = 0; y < scaled_height; y++) {
+//		for (int x = 0; x < scaled_width; x++) {
+//			int orig_x = x * scale_factor;
+//			int orig_y = y * scale_factor;
+//			unsigned long pixel = XGetPixel(orig_image, orig_x, orig_y);
+//			XPutPixel(scaled_image, x, y, pixel);
+//		}
+//	}
+//	scaled_image->depth = orig_image->depth;
+//	return scaled_image;
+//}
 
 int
 main(int argc, char *argv[])

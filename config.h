@@ -8,23 +8,24 @@ static const int scalepreview		  = 4;        /* preview scaling (display w and h
 static const int previewbar		  = 1;        /* show the bar in the preview window */
 static const char panel[][20]		  = { "xfce4-panel", "Xfce4-panel" }; /* name & cls of panel win */
 static const int swallowfloating	  = 0;	      /* 1 means swallow floating windows by default */
-static const int showbar                  = 1;        /* 0 means no bar */
+static const int showbar                  = 1;        /* 0 means no bar */        /* 0 means no bar */        /* 0 means no bar */        /* 0 means no bar */        /* 0 means no bar */
 static const int topbar                   = 1;        /* 0 means bottom bar */
 //static const int extrabar                 = 1;        /* 0 means no extra bar */
 static const char statussep		  = ';';
-static const int user_bh		  = 30;        /* 2 is the default spacing around the bar's font */
-static const int user_dh		  = 30;        /* 2 is the default spacing around the bar's font */
-static const int vertpad		  = 10;
+static const int user_bh		  = 32;        /* 2 is the default spacing around the bar's font */
+static const int user_dh		  = 40;        /* 2 is the default spacing around the bar's font */
+static const int vertpad		  = 8;
 static const int sidepad		  = 10;
-#define ICONSIZE 16
+#define ICONSIZE 25
 #define ICONSPACING 5
 
 //#define ACTUALFULLSCREEN
 #define AWESOMEBAR
-
-static const char *fonts[]                = { "monospace:size=15", "NotoColorEmoji:pixelsize=12:antialias=true:autohint=true" };
-static const char dmenufont[]             = "monospace:size=15";
-
+//static const char *fonts[] = { "Adwaita Sans:size=11:antialias=true:hinting=true" };
+//static const char *fonts[]                = { "monospace:size=15", "NotoColorEmoji:pixelsize=12:antialias=true:autohint=true" };
+//static const char dmenufont[]             = "monospace:size=15";
+static const char *fonts[] = { "Adwaita Sans:size=17:antialias=true:hinting=true", "Iosevka Nerd Font:size=17:antialias=true", "NotoColorEmoji:pixelsize=17:antialias=true:autohint=true" };
+static const char dmenufont[] = "Adwaita Sans:size=17";
 static const char col_gray1[]             = "#222222";
 static const char col_gray2[]             = "#444444";
 static const char col_gray3[]             = "#bbbbbb";
@@ -56,15 +57,17 @@ static const Rule rules[] = {
 	 *	WM_CLASS(STRING) = instance, class
 	 *	WM_NAME(STRING) = title
 	*/
-	/* class    instance   title		      tags mask   isfloating  isterminal   noswallow   monitor */
-	{ "Gimp",    NULL,     NULL,			   0,         1,          0,           0,        -1 },
-	{ "Firefox", NULL,     NULL,		      1 << 8,         0,          0,           0,        -1 },
-	{ "st",      NULL,     NULL,			   0,         0,          1,           0,        -1 },
-	{ "zenity",  NULL,     NULL,			   0,         1,          0,           1,        -1 }, // Add this line for Zenity
-	{ "Yad",     NULL,     NULL,			   0,         1,          0,           1,        -1 }, // Add this line for Yad
-	{ panel[1],  NULL,     NULL,		(1 << 9) - 1,         1,          0,          -1,        -1 },
-	{ NULL,      NULL,     "Event Tester",		   0,         0,          0,           1,        -1 }, /* xev */
-
+	/* class         instance  title                        tags mask  iscentered  isfloating  isterminal  noswallow  monitor */
+	{ "Gimp",        NULL,     NULL,                               0,          0,          1,          0,         0,      -1 },
+	{ "Firefox",     NULL,     NULL,                          1 << 8,          1,          0,          0,         0,      -1 },
+	{ "st",          NULL,     NULL,                               0,          1,          0,          1,         0,      -1 },
+	{ "zenity",      NULL,     NULL,                               0,          0,          1,          0,         1,      -1 },
+	{ "Yad",         NULL,     NULL,                               0,          0,          1,          0,         1,      -1 },
+	{ panel[1],      NULL,     NULL,                    (1 << 9) - 1,          0,          1,          0,        -1,      -1 },
+	{ NULL,          NULL,     "Event Tester",                     0,          0,          0,          0,         1,      -1 },
+	{ "mrsystray",   NULL,     NULL,                               0,          0,          1,          0,         1,      -1 },
+	{ "mrpowermenu", NULL,     NULL,                               0,          1,          1,          0,         1,      -1 },
+	{ "zenity",      NULL,     "Select items from the list",       0,          1,          1,          0,         1,      -1 },
 };
 
 /* layout(s) */
@@ -149,7 +152,7 @@ static const Key keys[] = {
 	{ MODKEY|ShiftMask,             XK_equal,  setgaps,        {.i = 0  } },
 	{ MODKEY,                       XK_s,      show,           {0} },
 	{ MODKEY|ShiftMask,             XK_s,      showall,        {0} },
-	{ MODKEY,                       XK_w,      previewallwin,  {0} },
+	{ MODKEY,                       XK_w,      previewallwinwrap,  {0} },
 	{ MODKEY|ShiftMask,             XK_h,      hide,           {0} },
 	TAGKEYS(                        XK_1,                      0)
 	TAGKEYS(                        XK_2,                      1)

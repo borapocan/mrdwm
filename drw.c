@@ -264,6 +264,16 @@ drw_text(Drw *drw, int x, int y, unsigned int w, unsigned int h, unsigned int lp
 	if (!drw || (render && (!drw->scheme || !w)) || !text || !drw->fonts)
 		return 0;
 
+	static char _buf[1024];
+	if (text) {
+		int _j = 0;
+		for (int _k = 0; text[_k] && _j < (int)sizeof(_buf)-1; _k++)
+			if ((unsigned char)text[_k] >= ' ')
+				_buf[_j++] = text[_k];
+		_buf[_j] = '\0';
+		text = _buf;
+	}
+
 	if (!render) {
 		w = invert ? invert : ~invert;
 	} else {
