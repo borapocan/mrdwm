@@ -20,7 +20,7 @@
  *
  * To understand everything else, start reading main().
  */
-#include <errno.h>
+//#include <errno.h>
 #include <locale.h>
 #include <signal.h>
 #include <stdarg.h>
@@ -336,9 +336,9 @@ static int collectpath(const char *text, int start, char *out);
 /* variables */
 static const char autostartblocksh[] = "autostart_blocking.sh";
 static const char autostartsh[] = "autostart.sh";
-static const char dwmdir[] = "dwm";
-static const char localshare[] = ".local/share";
-static const char broken[] = "broken";
+//static const char dwmdir[] = "mrdwm";
+//static const char localshare[] = "/usr/share/mrrobotos";
+static const char broken[] = "Untitled";
 static char stext[1024];
 static int statusw;
 static int statussig;
@@ -535,10 +535,10 @@ applysizehints(Client *c, int *x, int *y, int *w, int *h, int interact)
 			*h -= c->baseh;
 		}
 		/* adjust for increment value */
-		if (c->incw)
-			*w -= *w % c->incw;
-		if (c->inch)
-			*h -= *h % c->inch;
+		//if (c->incw)
+		//	*w -= *w % c->incw;
+		//if (c->inch)
+		//	*h -= *h % c->inch;
 		/* restore base dimensions */
 		*w = MAX(*w + c->basew, c->minw);
 		*h = MAX(*h + c->baseh, c->minh);
@@ -2088,7 +2088,7 @@ geticonprop(Window win, unsigned int *picw, unsigned int *pich)
 }
 
 pid_t
-getstatusbarpid()
+getstatusbarpid(void)
 {
 	char buf[32], *str = buf, *c;
 	FILE *fp;
@@ -2928,79 +2928,101 @@ run(void)
 void
 runautostart(void)
 {
-	char *pathpfx;
-	char *path;
-	char *xdgdatahome;
-	char *home;
+	char path[512];
 	struct stat sb;
+	const char *dir = "/usr/share/mrrobotos/mrdwm";
 
-	if ((home = getenv("HOME")) == NULL)
-		/* this is almost impossible */
+	/* check if the autostart directory exists */
+	if (!(stat(dir, &sb) == 0 && S_ISDIR(sb.st_mode)))
 		return;
 
-	/* if $XDG_DATA_HOME is set and not empty, use $XDG_DATA_HOME/dwm,
-	 * otherwise use ~/.local/share/dwm as autostart script directory
-	 */
-	xdgdatahome = getenv("XDG_DATA_HOME");
-	if (xdgdatahome != NULL && *xdgdatahome != '\0') {
-		/* space for path segments, separators and nul */
-		pathpfx = ecalloc(1, strlen(xdgdatahome) + strlen(dwmdir) + 2);
-
-		if (sprintf(pathpfx, "%s/%s", xdgdatahome, dwmdir) <= 0) {
-			free(pathpfx);
-			return;
-		}
-	} else {
-		/* space for path segments, separators and nul */
-		pathpfx = ecalloc(1, strlen(home) + strlen(localshare)
-		                     + strlen(dwmdir) + 3);
-
-		if (sprintf(pathpfx, "%s/%s/%s", home, localshare, dwmdir) < 0) {
-			free(pathpfx);
-			return;
-		}
-	}
-
-	/* check if the autostart script directory exists */
-	if (! (stat(pathpfx, &sb) == 0 && S_ISDIR(sb.st_mode))) {
-		/* the XDG conformant path does not exist or is no directory
-		 * so we try ~/.dwm instead
-		 */
-		char *pathpfx_new = realloc(pathpfx, strlen(home) + strlen(dwmdir) + 3);
-		if(pathpfx_new == NULL) {
-			free(pathpfx);
-			return;
-		}
-		pathpfx = pathpfx_new;
-
-		if (sprintf(pathpfx, "%s/.%s", home, dwmdir) <= 0) {
-			free(pathpfx);
-			return;
-		}
-	}
-
 	/* try the blocking script first */
-	path = ecalloc(1, strlen(pathpfx) + strlen(autostartblocksh) + 2);
-	if (sprintf(path, "%s/%s", pathpfx, autostartblocksh) <= 0) {
-		free(path);
-		free(pathpfx);
-	}
-
+	snprintf(path, sizeof(path), "%s/%s", dir, autostartblocksh);
 	if (access(path, X_OK) == 0)
 		system(path);
 
 	/* now the non-blocking script */
-	if (sprintf(path, "%s/%s", pathpfx, autostartsh) <= 0) {
-		free(path);
-		free(pathpfx);
-	}
-
+	snprintf(path, sizeof(path), "%s/%s &", dir, autostartsh);
 	if (access(path, X_OK) == 0)
-		system(strcat(path, " &"));
-
-	free(pathpfx);
-	free(path);
+		system(path);
 }
+
+//void
+//runautostart(void)
+//{
+//	char *pathpfx;
+//	char *path;
+//	char *xdgdatahome;
+//	char *home;
+//	struct stat sb;
+//
+//	if ((home = getenv("HOME")) == NULL)
+//		/* this is almost impossible */
+//		return;
+//
+//	/* if $XDG_DATA_HOME is set and not empty, use $XDG_DATA_HOME/dwm,
+//	 * otherwise use ~/.local/share/dwm as autostart script directory
+//	 */
+//	xdgdatahome = getenv("XDG_DATA_HOME");
+//	if (xdgdatahome != NULL && *xdgdatahome != '\0') {
+//		/* space for path segments, separators and nul */
+//		pathpfx = ecalloc(1, strlen(xdgdatahome) + strlen(dwmdir) + 2);
+//
+//		if (sprintf(pathpfx, "%s/%s", xdgdatahome, dwmdir) <= 0) {
+//			free(pathpfx);
+//			return;
+//		}
+//	} else {
+//		/* space for path segments, separators and nul */
+//		pathpfx = ecalloc(1, strlen(home) + strlen(localshare)
+//		                     + strlen(dwmdir) + 3);
+//
+//		if (sprintf(pathpfx, "%s/%s/%s", home, localshare, dwmdir) < 0) {
+//			free(pathpfx);
+//			return;
+//		}
+//	}
+//
+//	/* check if the autostart script directory exists */
+//	if (! (stat(pathpfx, &sb) == 0 && S_ISDIR(sb.st_mode))) {
+//		/* the XDG conformant path does not exist or is no directory
+//		 * so we try ~/.dwm instead
+//		 */
+//		char *pathpfx_new = realloc(pathpfx, strlen(home) + strlen(dwmdir) + 3);
+//		if(pathpfx_new == NULL) {
+//			free(pathpfx);
+//			return;
+//		}
+//		pathpfx = pathpfx_new;
+//
+//		if (sprintf(pathpfx, "%s/.%s", home, dwmdir) <= 0) {
+//			free(pathpfx);
+//			return;
+//		}
+//	}
+//
+//	/* try the blocking script first */
+//	path = ecalloc(1, strlen(pathpfx) + strlen(autostartblocksh) + 2);
+//	if (sprintf(path, "%s/%s", pathpfx, autostartblocksh) <= 0) {
+//		free(path);
+//		free(pathpfx);
+//	}
+//
+//	if (access(path, X_OK) == 0)
+//		system(path);
+//
+//	/* now the non-blocking script */
+//	if (sprintf(path, "%s/%s", pathpfx, autostartsh) <= 0) {
+//		free(path);
+//		free(pathpfx);
+//	}
+//
+//	if (access(path, X_OK) == 0)
+//		system(strcat(path, " &"));
+//
+//	free(pathpfx);
+//	free(path);
+//}
 
 void
 scan(void)
@@ -3212,7 +3234,7 @@ takepreview(void)
 		XSync(dpy, False);
 
 		if (!(image = imlib_create_image(sw, sh))) {
-			fprintf(stderr, "dwm: imlib: failed to create image, skipping.");
+			fprintf(stderr, "mrdwm: imlib: failed to create image, skipping.");
 			continue;
 		}
 		imlib_context_set_image(image);
@@ -3377,7 +3399,7 @@ setup(void)
 	XChangeProperty(dpy, wmcheckwin, netatom[NetWMCheck], XA_WINDOW, 32,
 		PropModeReplace, (unsigned char *) &wmcheckwin, 1);
 	XChangeProperty(dpy, wmcheckwin, netatom[NetWMName], utf8string, 8,
-		PropModeReplace, (unsigned char *) "dwm", 3);
+		PropModeReplace, (unsigned char *) "mrdwm", 3);
 	XChangeProperty(dpy, root, netatom[NetWMCheck], XA_WINDOW, 32,
 		PropModeReplace, (unsigned char *) &wmcheckwin, 1);
 	/* EWMH support per view */
@@ -3509,7 +3531,7 @@ spawn(const Arg *arg)
 		sigaction(SIGCHLD, &sa, NULL);
 
 		execvp(((char **)arg->v)[0], (char **)arg->v);
-		die("dwm: execvp '%s' failed:", ((char **)arg->v)[0]);
+		die("mrdwm: execvp '%s' failed:", ((char **)arg->v)[0]);
 	}
 }
 
@@ -3903,7 +3925,7 @@ updatebars(void)
 		.event_mask = ButtonPressMask|ExposureMask|PointerMotionMask
 
 	};
-	XClassHint ch = {"dwm"};
+	XClassHint ch = {"mrdwm"};
 	for (m = mons; m; m = m->next) {
 		if (!m->tagwin) {
 			m->tagwin = XCreateWindow(dpy, root, m->wx, m->wy, m->mw / scalepreview,
@@ -3975,7 +3997,7 @@ updatebarpos(Monitor *m)
 //}
 
 void
-updateclientlist()
+updateclientlist(void)
 {
 	Client *c;
 	Monitor *m;
@@ -4131,7 +4153,7 @@ updatestatus(void)
 {
 	flushimgcache();
 	if (!gettextprop(root, XA_WM_NAME, stext, sizeof(stext)))
-		strcpy(stext, "dwm-"VERSION);
+		strcpy(stext, "mrdwm-"VERSION);
 	drawbar(selmon);
 }
 
@@ -4368,7 +4390,7 @@ xerror(Display *dpy, XErrorEvent *ee)
 	|| (ee->request_code == X_GrabKey && ee->error_code == BadAccess)
 	|| (ee->request_code == X_CopyArea && ee->error_code == BadDrawable))
 		return 0;
-	fprintf(stderr, "dwm: fatal error: request code=%d, error code=%d\n",
+	fprintf(stderr, "mrdwm: fatal error: request code=%d, error code=%d\n",
 		ee->request_code, ee->error_code);
 	return xerrorxlib(dpy, ee); /* may call exit */
 }
@@ -4384,7 +4406,7 @@ xerrordummy(Display *dpy, XErrorEvent *ee)
 int
 xerrorstart(Display *dpy, XErrorEvent *ee)
 {
-	die("dwm: another window manager is already running");
+	die("mrdwm: another window manager is already running");
 	return -1;
 }
 
@@ -4551,11 +4573,11 @@ previewallwin(const Arg *arg){
         if (font) XSetFont(dpy, sgc, font->fid); \
         int _pad = 14; \
         if (search_len == 0 && !search_focused) { \
-            XSetForeground(dpy, sgc, 0xbbbbbb); \
+            XSetForeground(dpy, sgc, 0x444444); \
             XDrawString(dpy, searchwin, sgc, _pad, sb_h/2+6, \
                 "Click to search windows...", 26); \
         } else if (search_len == 0 && search_focused) { \
-            XSetForeground(dpy, sgc, 0xcccccc); \
+            XSetForeground(dpy, sgc, 0x444444); \
             XDrawString(dpy, searchwin, sgc, _pad, sb_h/2+6, \
                 "Type a window name...", 21); \
             if (cursor_vis) { \
@@ -5441,7 +5463,7 @@ getwindowximage(Client *c) {
 	pa.subwindow_mode = IncludeInferiors;
 	Picture picture = XRenderCreatePicture( dpy, c->win, format, CPSubwindowMode, &pa );
 	Pixmap pixmap = XCreatePixmap(dpy, root, c->w, c->h, 32);
-	XRenderPictureAttributes pa2;
+	XRenderPictureAttributes pa2 = {0};
 	XRenderPictFormat *format2 = XRenderFindStandardFormat(dpy, PictStandardARGB32);
 	Picture pixmapPicture = XRenderCreatePicture( dpy, pixmap, format2, 0, &pa2 );
 	XRenderColor color;
@@ -5490,15 +5512,15 @@ int
 main(int argc, char *argv[])
 {
 	if (argc == 2 && !strcmp("-v", argv[1]))
-		die("dwm-"VERSION);
+		die("mrdwm-"VERSION);
 	else if (argc != 1)
-		die("usage: dwm [-v]");
+		die("usage: mrdwm [-v]");
 	if (!setlocale(LC_CTYPE, "") || !XSupportsLocale())
 		fputs("warning: no locale support\n", stderr);
 	if (!(dpy = XOpenDisplay(NULL)))
-		die("dwm: cannot open display");
+		die("mrdwm: cannot open display");
 	if (!(xcon = XGetXCBConnection(dpy)))
-		die("dwm: cannot get xcb connection\n");
+		die("mrdwm: cannot get xcb connection\n");
 	checkotherwm();
 	setup();
 #ifdef __OpenBSD__

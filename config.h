@@ -8,7 +8,7 @@ static const int scalepreview		  = 4;        /* preview scaling (display w and h
 static const int previewbar		  = 1;        /* show the bar in the preview window */
 static const char panel[][20]		  = { "xfce4-panel", "Xfce4-panel" }; /* name & cls of panel win */
 static const int swallowfloating	  = 0;	      /* 1 means swallow floating windows by default */
-static const int showbar                  = 1;        /* 0 means no bar */        /* 0 means no bar */        /* 0 means no bar */        /* 0 means no bar */        /* 0 means no bar */
+static const int showbar                  = 1;        /* 0 means no bar */
 static const int topbar                   = 1;        /* 0 means bottom bar */
 //static const int extrabar                 = 1;        /* 0 means no extra bar */
 static const char statussep		  = ';';
@@ -60,7 +60,7 @@ static const Rule rules[] = {
 	/* class         instance  title                        tags mask  iscentered  isfloating  isterminal  noswallow  monitor */
 	{ "Gimp",        NULL,     NULL,                               0,          0,          1,          0,         0,      -1 },
 	{ "Firefox",     NULL,     NULL,                          1 << 8,          1,          0,          0,         0,      -1 },
-	{ "st",          NULL,     NULL,                               0,          1,          0,          1,         0,      -1 },
+	{ "mrst",        NULL,     NULL,                               0,          1,          0,          1,         0,      -1 },
 	{ "zenity",      NULL,     NULL,                               0,          0,          1,          0,         1,      -1 },
 	{ "Yad",         NULL,     NULL,                               0,          0,          1,          0,         1,      -1 },
 	{ panel[1],      NULL,     NULL,                    (1 << 9) - 1,          0,          1,          0,        -1,      -1 },
@@ -71,7 +71,7 @@ static const Rule rules[] = {
 };
 
 /* layout(s) */
-static const float mfact     = 0.525; /* factor of master area size [0.05..0.95] */
+static const float mfact     = 0.49; /* factor of master area size [0.05..0.95] */
 static const int nmaster     = 1;    /* number of clients in master area */
 static const int resizehints = 0;    /* 1 means respect size hints in tiled resizals */
 static const int lockfullscreen = 1; /* 1 will force focus on the fullscreen window */
@@ -102,13 +102,13 @@ static const Layout layouts[] = {
 /* helper for spawning shell commands in the pre dwm-5.0 fashion */
 
 #define SHCMD(cmd) { .v = (const char*[]){ "/bin/sh", "-c", cmd, NULL } }
-#define STATUSBAR "dwmblocks"
+#define STATUSBAR "mrblocks"
 
 /* commands */
 static char dmenumon[2] = "0"; /* component of dmenucmd, manipulated in spawn() */
-static const char *dmenucmd[] = { "dmenu_run", "-m", dmenumon, "-fn", dmenufont, "-nb", col_gray1, "-nf", col_gray3, "-sb", col_cyan, "-sf", col_gray4, NULL };
-static const char *termcmd[]  = { "st", NULL };
-static const char *layoutmenu_cmd = "/home/mrrobot/.local/bin/system-scripts/layoutmenu.sh";
+static const char *dmenucmd[] = { "mrdmenu_run", "-m", dmenumon, "-fn", dmenufont, "-nb", col_gray1, "-nf", col_gray3, "-sb", col_cyan, "-sf", col_gray4, NULL };
+static const char *termcmd[]  = { "mrst", NULL };
+static const char *layoutmenu_cmd = "/usr/local/bin/layoutmenu.sh";
 
 static const Key keys[] = {
 	/* modifier                     key        function        argument */
