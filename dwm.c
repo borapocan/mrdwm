@@ -20,16 +20,20 @@
  *
  * To understand everything else, start reading main().
  */
-//#include <errno.h>
+
+#include <errno.h>
 #include <locale.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <syslog.h>
 #include <string.h>
 #include <unistd.h>
 #include <limits.h>
 #include <stdint.h>
+#include <dirent.h>
+#include <ctype.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -56,7 +60,7 @@
 #define BUTTONMASK              (ButtonPressMask|ButtonReleaseMask)
 #define CLEANMASK(mask)         (mask & ~(numlockmask|LockMask) & (ShiftMask|ControlMask|Mod1Mask|Mod2Mask|Mod3Mask|Mod4Mask|Mod5Mask))
 #define INTERSECT(x,y,w,h,m)    (MAX(0, MIN((x)+(w),(m)->wx+(m)->ww) - MAX((x),(m)->wx)) \
-                               * MAX(0, MIN((y)+(h),(m)->wy+(m)->wh) - MAX((y),(m)->wy)))
+				 * MAX(0, MIN((y)+(h),(m)->wy+(m)->wh) - MAX((y),(m)->wy)))
 #define ISVISIBLE(C)            ((C->tags & C->mon->tagset[C->mon->seltags]))
 #define HIDDEN(C)               ((getstate(C->win) == IconicState))
 #define LENGTH(X)               (sizeof X / sizeof X[0])
@@ -66,21 +70,70 @@
 #define TAGMASK                 ((1 << LENGTH(tags)) - 1)
 #define TEXTW(X)                (drw_fontset_getwidth(drw, (X)) + lrpad)
 
+#define TAGSLENGTH (LENGTH(tags))
+
 #define STATUSIMG_CACHE_MAX 64
 #define STATUSIMG_PATH_MAX  4096
+
+/* MrRobotOS dark palette */
+#define OV_CARD_SOLID    0x0f0f15UL
+#define OV_CARD_HOV_S    0x1a1a26UL
+#define OV_TITLEBAR_S    0x0b0b12UL
+#define OV_TAB_ACTIVE    0xe63946UL
+#define OV_TAB_NORM_S    0x111120UL
+#define OV_TAB_DIV       0x252535UL
+#define OV_ACCENT        0x00ff88UL
+#define OV_WIN_SEL_BDR   0xe63946UL
+#define OV_BORDER_NORM   0x2a2a3aUL
+#define OV_TEXT_HI       0xf4f4f8UL
+#define OV_TEXT_MID      0x9090a8UL
+#define OV_TEXT_LO       0x3a3a55UL
+#define OV_SEARCH_BG     0xf2f2f5UL
+#define OV_SEARCH_TEXT   0x0a0a14UL
+#define OV_SEARCH_PH     0x777788UL
+#define OV_SEARCH_BRD    0xc8c8d8UL
+#define OV_PG_BG_S       0x0b0b12UL
+#define OV_PG_BTN_S      0x18182aUL
+#define OV_PG_BTN_DIS    0x0f0f18UL
+#define OV_SEP           0x20203aUL
+#define OV_DIM           0x111120UL
+
+
+/* Layout dimensions (px) */
+#define OV_SB_H          46
+#define OV_TAB_H         46
+#define OV_PG_H          50
+#define OV_GAP           14
+#define OV_MARGIN        56
+#define OV_TOP_PAD       24
+#define OV_TITLEBAR_H    46
+#define OV_ICON_SZ       56
+#define OV_RUN_PILL_W    32
+#define OV_RUN_PILL_H     4
+#define OV_SB_MAX_W      580
+#define OV_TAB_MAX_W     460
+#define OV_WIN_PER_PG      6
+#define OV_APP_CH        148
+#define OV_CORNER_R        8
+
 
 /* enums */
 enum { CurNormal, CurResize, CurMove, CurLast }; /* cursor */
 //enum { SchemeNorm, SchemeSel }; /* color schemes */
 //enum { SchemeNorm, SchemeSel, SchemeHov, SchemeHid }; /* color schemes */
 enum { SchemeNorm, SchemeSel, SchemeHov, SchemeHid, SchemeStatus, SchemeTagsSel, SchemeTagsNorm, SchemeInfoSel, SchemeInfoNorm }; /* color schemes */
+//enum { NetSupported, NetWMName, NetWMIcon, NetWMState, NetWMCheck,
+//	NetWMFullscreen, NetActiveWindow, NetWMWindowType,
+//	NetWMWindowTypeDialog, NetClientList, NetClientInfo, NetLast }; /* EWMH atoms */
 enum { NetSupported, NetWMName, NetWMIcon, NetWMState, NetWMCheck,
-       NetWMFullscreen, NetActiveWindow, NetWMWindowType,
-       NetWMWindowTypeDialog, NetClientList, NetClientInfo, NetLast }; /* EWMH atoms */
+    NetWMFullscreen, NetActiveWindow, NetWMWindowType,
+    NetWMWindowTypeDialog, NetWMWindowTypeNormal, NetClientList, NetClientInfo,
+    NetDesktopNames, NetDesktopViewport, NetNumberOfDesktops, NetCurrentDesktop,
+    NetLast };
 enum { WMProtocols, WMDelete, WMState, WMTakeFocus, WMLast }; /* default atoms */
 enum { ClkTagBar, ClkLtSymbol, ClkStatusText, ClkButton, ClkWinTitle,
-       //ClkExBarLeftStatus, ClkExBarMiddle, ClkExBarRightStatus,
-       ClkClientWin, ClkRootWin, ClkLast }; /* clicks */
+	//ClkExBarLeftStatus, ClkExBarMiddle, ClkExBarRightStatus,
+	ClkClientWin, ClkRootWin, ClkLast }; /* clicks */
 
 typedef union {
 	int i;
@@ -151,7 +204,7 @@ struct Monitor {
 	int by;               /* bar geometry */
 	int btw;              /* width of tasks portion of bar */
 	int bt;               /* number of tasks */
-//	int eby;	      /* extra bar geometry */
+	//	int eby;	      /* extra bar geometry */
 	int mx, my, mw, mh;   /* screen size */
 	int wx, wy, ww, wh;   /* window area  */
 	int gappx;            /* gaps between windows */
@@ -186,11 +239,29 @@ typedef struct {
 } Rule;
 
 typedef struct {
-    char         path[STATUSIMG_PATH_MAX];
-    Imlib_Image  img;
-    int          orig_w;
-    int          orig_h;
+	char         path[STATUSIMG_PATH_MAX];
+	Imlib_Image  img;
+	int          orig_w;
+	int          orig_h;
 } StatusImgCache;
+
+typedef struct {
+	char         name[256];
+	char         exec[512];
+	char         icon_path[512];
+	int          running;
+	int          run_count;
+	Picture      icon_pic;
+	unsigned int icw, ich;
+} AppEntry;
+
+typedef enum { TAB_WINDOWS = 0, TAB_APPS = 1 } OverviewTab;
+
+/* sub-view shown when clicking a running app */
+typedef enum {
+	VIEW_MAIN = 0,        /* normal windows/apps grid          */
+	VIEW_APP_RUNNING = 1  /* "app is running" picker           */
+} OverviewView;
 
 /* function declarations */
 static void applyrules(Client *c);
@@ -282,6 +353,8 @@ static void sighup(int unused);
 static void sigterm(int unused);
 static void sigstatusbar(const Arg *arg);
 static void spawn(const Arg *arg);
+static void spawnifdesk(const Arg *arg);
+static void spawnifterm(const Arg *arg);
 static void spiral(Monitor *mon);
 static void tag(const Arg *arg);
 static void tagmon(const Arg *arg);
@@ -333,6 +406,45 @@ static StatusImgCache * getimg(const char *path);
 static int drawimg(const char *path, int x, int bh);
 static int measureimg(const char *path, int bh);
 static int collectpath(const char *text, int start, char *out);
+static void    ov_draw_searchbar(Window w, GC gc, XFontStruct *f,
+				 const char *buf, int len, int cursor_vis,
+				 int wb, int hb);
+static void    ov_draw_tabs(Window w, GC gc, XFontStruct *fb,
+			    OverviewTab cur, int tw, int th);
+static void    ov_draw_pager(Window w, GC gc, XFontStruct *f,
+			     int page, int total_pages, int ww, int ph);
+static Picture ov_load_icon(const char *path, unsigned int sz);
+static void    ov_find_icon(const char *name, char *out, size_t outsz);
+static void    ov_parse_one_dir(const char *dir,
+				AppEntry **apps, int *count, int *cap);
+static int     ov_parse_desktop_files(AppEntry **out, int *count);
+static void    ov_free_apps(AppEntry *apps, int count);
+static void    ov_launch(const char *exec_raw);
+static int     ov_count_running(AppEntry *a);
+static void    ov_blit_pic(Drawable dst, Picture src,
+			   int dx, int dy, unsigned int w, unsigned int h);
+static void    ov_draw_win_card(Window cw, GC gc, XFontStruct *f,
+				Client *c, int hovered, int selected,
+				unsigned int cardw, unsigned int cardh);
+static void    ov_draw_app_card(Window cw, GC gc, XFontStruct *f,
+				AppEntry *a, int hovered, int selected,
+				unsigned int cardw, unsigned int cardh);
+static void    ov_draw_run_card(Window cw, GC gc, XFontStruct *f,
+				const char *line1, const char *line2,
+				Picture icon, int hovered, int selected,
+				int special, unsigned long spec_col,
+				unsigned int cardw, unsigned int cardh);
+static int     ov_app_cmp(const void *a, const void *b);
+static Window  ov_make_card_win(Window parent, int cx, int cy,
+				int cw, int ch, unsigned long bg);
+
+static void setcurrentdesktop(void);
+static void setdesktopnames(void);
+static void setnumdesktops(void);
+static void setviewport(void);
+static void updatecurrentdesktop(void);
+
+
 /* variables */
 static const char autostartblocksh[] = "autostart_blocking.sh";
 static const char autostartsh[] = "autostart.sh";
@@ -374,7 +486,7 @@ static int run_preview = 0;
 static int run_recompile = 0;
 static int preview_running = 0;
 
-static volatile sig_atomic_t sigusr1_count = 0;
+//static volatile sig_atomic_t sigusr1_count = 0;
 static Cur *cursor[CurLast];
 static Clr **scheme;
 static Display *dpy;
@@ -387,6 +499,7 @@ static int sp;               /* side padding for bar */
 
 static StatusImgCache _imgcache[STATUSIMG_CACHE_MAX];
 static int            _imgcache_n = 0;
+static XRenderPictFormat *scrfmt = NULL;
 
 /* configuration, allows nested code to access above variables */
 #include "config.h"
@@ -394,8 +507,1148 @@ static int            _imgcache_n = 0;
 /* compile-time check if all tags fit into an unsigned int bit array. */
 struct NumTags { char limitexceeded[LENGTH(tags) > 31 ? -1 : 1]; };
 
+	static inline void
+ov_fill(Drawable dr, GC gc, unsigned long col, int x, int y, int w, int h)
+{
+	XSetForeground(dpy, gc, col);
+	XFillRectangle(dpy, dr, gc, x, y, (unsigned)w, (unsigned)h);
+}
+
+static inline void
+ov_fill_rect(Drawable dr, GC gc, unsigned long col, int x, int y, int w, int h)
+{
+    XSetForeground(dpy, gc, col);
+    XFillRectangle(dpy, dr, gc, x, y, (unsigned)w, (unsigned)h);
+}
+
+
+	static void
+ov_fill_round(Drawable dr, GC gc, unsigned long col, unsigned long bg,
+	      int x, int y, int w, int h, int r)
+{
+	XSetForeground(dpy, gc, col);
+	XFillRectangle(dpy, dr, gc, x, y, (unsigned)w, (unsigned)h);
+	XSetForeground(dpy, gc, bg);
+	XFillRectangle(dpy, dr, gc, x,     y,     r, r);
+	XFillRectangle(dpy, dr, gc, x+w-r, y,     r, r);
+	XFillRectangle(dpy, dr, gc, x,     y+h-r, r, r);
+	XFillRectangle(dpy, dr, gc, x+w-r, y+h-r, r, r);
+	XSetForeground(dpy, gc, col);
+	XFillArc(dpy, dr, gc, x,       y,       2*r, 2*r, 90*64,  90*64);
+	XFillArc(dpy, dr, gc, x+w-2*r, y,       2*r, 2*r, 0,      90*64);
+	XFillArc(dpy, dr, gc, x,       y+h-2*r, 2*r, 2*r, 180*64, 90*64);
+	XFillArc(dpy, dr, gc, x+w-2*r, y+h-2*r, 2*r, 2*r, 270*64, 90*64);
+}
+
+static inline void
+ov_rect_plain(Drawable dr, GC gc, unsigned long col, int x, int y, int w, int h)
+{
+    XSetForeground(dpy, gc, col);
+    XDrawRectangle(dpy, dr, gc, x, y, (unsigned)w, (unsigned)h);
+}
+
+
+
+	static void
+ov_rect_round(Drawable dr, GC gc, unsigned long col,
+	      int x, int y, int w, int h, int r)
+{
+	XSetForeground(dpy, gc, col);
+	XDrawLine(dpy, dr, gc, x+r,   y,     x+w-r-1, y);
+	XDrawLine(dpy, dr, gc, x+r,   y+h-1, x+w-r-1, y+h-1);
+	XDrawLine(dpy, dr, gc, x,     y+r,   x,       y+h-r-1);
+	XDrawLine(dpy, dr, gc, x+w-1, y+r,   x+w-1,   y+h-r-1);
+	XDrawArc(dpy, dr, gc, x,       y,       2*r, 2*r, 90*64,  90*64);
+	XDrawArc(dpy, dr, gc, x+w-2*r, y,       2*r, 2*r, 0,      90*64);
+	XDrawArc(dpy, dr, gc, x,       y+h-2*r, 2*r, 2*r, 180*64, 90*64);
+	XDrawArc(dpy, dr, gc, x+w-2*r, y+h-2*r, 2*r, 2*r, 270*64, 90*64);
+}
+
+	static void
+ov_fill_pill(Drawable dr, GC gc, unsigned long col,
+	     int x, int y, int w, int h)
+{
+	ov_fill_round(dr, gc, col, col, x, y, w, h, h/2);
+}
+
+	static void
+ov_text_c(Drawable dr, GC gc, XFontStruct *f, unsigned long col,
+	  const char *s, int rx, int ry, int rw, int rh)
+{
+	if (!s || !*s || rw <= 0) return;
+	int tw = f ? XTextWidth(f, s, (int)strlen(s)) : (int)strlen(s)*10;
+	int tx = rx + (rw - tw) / 2;
+	int ty = ry + (rh + (f ? f->ascent : 12) - (f ? f->descent : 3)) / 2;
+	if (f) XSetFont(dpy, gc, f->fid);
+	XSetForeground(dpy, gc, col);
+	XDrawString(dpy, dr, gc, tx, ty, s, (int)strlen(s));
+}
+
+/* left-aligned with ... clip */
+	static void
+ov_text_l(Drawable dr, GC gc, XFontStruct *f, unsigned long col,
+	  const char *s, int rx, int ry, int rw, int rh)
+{
+	if (!s || !*s || rw <= 0) return;
+	int ty = ry + (rh + (f ? f->ascent : 12) - (f ? f->descent : 3)) / 2;
+	if (f) XSetFont(dpy, gc, f->fid);
+	char buf[256];
+	snprintf(buf, sizeof(buf), "%s", s);
+	if (f) {
+		int ew = XTextWidth(f, "...", 3);
+		while ((int)strlen(buf) > 3 &&
+		       XTextWidth(f, buf, (int)strlen(buf)) > rw)
+			buf[strlen(buf)-1] = '\0';
+		if (strcmp(buf, s) != 0)
+			strncat(buf, "...", sizeof(buf) - strlen(buf) - 1);
+		(void)ew;
+	}
+	XSetForeground(dpy, gc, col);
+	XDrawString(dpy, dr, gc, rx, ty, buf, (int)strlen(buf));
+}
+
+
+/* centred with ... clip */
+	static void
+ov_text_cc(Drawable dr, GC gc, XFontStruct *f, unsigned long col,
+	   const char *s, int rx, int ry, int rw, int rh)
+{
+	if (!s || !*s || rw <= 0) return;
+	char buf[256];
+	snprintf(buf, sizeof(buf), "%s", s);
+	if (f) {
+		while ((int)strlen(buf) > 3 &&
+		       XTextWidth(f, buf, (int)strlen(buf)) > rw)
+			buf[strlen(buf)-1] = '\0';
+		if (strcmp(buf, s) != 0)
+			strncat(buf, "...", sizeof(buf) - strlen(buf) - 1);
+	}
+	ov_text_c(dr, gc, f, col, buf, rx, ry, rw, rh);
+}
+
+/* ── search bar ─────────────────────────────────────────────────────────── */
+static void
+ov_draw_searchbar(Window w, GC gc, XFontStruct *f,
+		  const char *buf, int len, int cursor_vis,
+		  int wb, int hb)
+{
+	/* background + border */
+	ov_fill_round(w, gc, OV_SEARCH_BG, OV_DIM, 0, 0, wb, hb, OV_CORNER_R);
+	ov_rect_round(w, gc, OV_SEARCH_BRD, 0, 0, wb - 1, hb - 1, OV_CORNER_R);
+
+	/* icon: square, fits inside bar with equal top/bottom margin */
+	int ico_sz = hb - 18;
+	if (ico_sz < 8) ico_sz = 8;
+	int ico_x = 10;
+	int ico_y = (hb - ico_sz) / 2;
+
+	/* draw a simple magnifier using Xlib — no icon loading, no colour issues */
+	{
+		int cx = ico_x + ico_sz / 2 - ico_sz / 8;
+		int cy = ico_y + ico_sz / 2 - ico_sz / 8;
+		int r  = ico_sz / 3;
+		int lx1 = cx + (int)(r * 0.65);
+		int ly1 = cy + (int)(r * 0.65);
+		int lx2 = ico_x + ico_sz - 3;
+		int ly2 = ico_y + ico_sz - 3;
+
+		XSetForeground(dpy, gc, OV_SEARCH_TEXT);
+		/* circle — draw twice for thickness */
+		XDrawArc(dpy, w, gc, cx - r, cy - r, r * 2,     r * 2,     0, 360 * 64);
+		XDrawArc(dpy, w, gc, cx - r + 1, cy - r + 1, r * 2 - 2, r * 2 - 2, 0, 360 * 64);
+		/* handle */
+		XDrawLine(dpy, w, gc, lx1,     ly1,     lx2,     ly2);
+		XDrawLine(dpy, w, gc, lx1 + 1, ly1,     lx2 + 1, ly2);
+		XDrawLine(dpy, w, gc, lx1,     ly1 + 1, lx2,     ly2 + 1);
+	}
+
+	int tx = ico_x + ico_sz + 10;
+	int tw = wb - tx - 14;
+
+	if (len == 0) {
+		ov_text_l(w, gc, f, OV_SEARCH_PH, "Type to search...", tx, 0, tw, hb);
+		if (cursor_vis) {
+			XSetForeground(dpy, gc, OV_SEARCH_TEXT);
+			XDrawLine(dpy, w, gc, tx,     hb / 4 + 2, tx,     hb * 3 / 4 - 2);
+			XDrawLine(dpy, w, gc, tx + 1, hb / 4 + 2, tx + 1, hb * 3 / 4 - 2);
+		}
+	} else {
+		ov_text_l(w, gc, f, OV_SEARCH_TEXT, buf, tx, 0, tw, hb);
+		if (cursor_vis) {
+			int cx = tx + (f && len > 0 ? XTextWidth(f, buf, len) : 0) + 2;
+			XSetForeground(dpy, gc, OV_SEARCH_TEXT);
+			XDrawLine(dpy, w, gc, cx,     hb / 4 + 2, cx,     hb * 3 / 4 - 2);
+			XDrawLine(dpy, w, gc, cx + 1, hb / 4 + 2, cx + 1, hb * 3 / 4 - 2);
+		}
+	}
+}
+/* ── tab bar ────────────────────────────────────────────────────────────── */
+static void
+ov_draw_tabs(Window w, GC gc, XFontStruct *fb,
+	     OverviewTab cur, int tw, int th)
+{
+	int hw = tw / 2;
+
+    /* full background */
+    ov_fill_rect(w, gc, OV_TAB_NORM_S, 0, 0, tw, th);
+
+    if (cur == TAB_WINDOWS) {
+        /* left half active */
+        ov_fill_rect(w, gc, OV_TAB_ACTIVE, 0, 0, hw, th);
+    } else {
+        /* right half active */
+        ov_fill_rect(w, gc, OV_TAB_ACTIVE, hw, 0, tw - hw, th);
+    }
+
+    ov_text_c(w, gc, fb,
+              cur == TAB_WINDOWS ? 0x050505UL : OV_TEXT_MID,
+              "WINDOWS", 0, 0, hw, th);
+    ov_text_c(w, gc, fb,
+              cur == TAB_APPS ? 0x050505UL : OV_TEXT_MID,
+              "APPLICATIONS", hw, 0, hw, th);
+
+    /* centre divider */
+    XSetForeground(dpy, gc, 0x252538UL);
+    XDrawLine(dpy, w, gc, hw, 0, hw, th - 1);
+
+	//int hw = tw / 2;
+	//int r  = OV_CORNER_R;
+
+	///* full background as one rounded rect */
+	//ov_fill_round(w, gc, OV_TAB_NORM_S, OV_DIM, 0, 0, tw, th, r);
+
+	//if (cur == TAB_WINDOWS) {
+	//	/* left half active — fill left rounded pill */
+	//	ov_fill_round(w, gc, OV_TAB_ACTIVE, OV_TAB_NORM_S, 0, 0, tw, th, r);
+	//	/* restore right half dark — square left edge of right half */
+	//	XSetForeground(dpy, gc, OV_TAB_NORM_S);
+	//	XFillRectangle(dpy, w, gc, hw, 0, tw - hw, th);
+	//	/* re-round outer right corners */
+	//	XSetForeground(dpy, gc, OV_TAB_NORM_S);
+	//	XFillArc(dpy, w, gc, tw - 2*r - 1, 0,       2*r+1, 2*r,   0,      90*64);
+	//	XFillArc(dpy, w, gc, tw - 2*r - 1, th-2*r,  2*r+1, 2*r,   270*64, 90*64);
+	//	XSetForeground(dpy, gc, OV_DIM);
+	//	XFillArc(dpy, w, gc, tw - 2*r - 1, 0,       2*r+1, 2*r,   0,      90*64);
+	//	XFillArc(dpy, w, gc, tw - 2*r - 1, th-2*r,  2*r+1, 2*r,   270*64, 90*64);
+	//	/* re-draw right outer rounded corners with norm color */
+	//	XSetForeground(dpy, gc, OV_TAB_NORM_S);
+	//	XFillArc(dpy, w, gc, tw-2*r, 0,      2*r, 2*r, 0,      90*64);
+	//	XFillArc(dpy, w, gc, tw-2*r, th-2*r, 2*r, 2*r, 270*64, 90*64);
+	//} else {
+	//	/* right half active */
+	//	ov_fill_round(w, gc, OV_TAB_ACTIVE, OV_TAB_NORM_S, hw, 0, tw-hw, th, r);
+	//	/* square left edge of active area */
+	//	XSetForeground(dpy, gc, OV_TAB_ACTIVE);
+	//	XFillRectangle(dpy, w, gc, hw, 0, r, th);
+	//	/* restore left half dark — square right edge of left half */
+	//	XSetForeground(dpy, gc, OV_TAB_NORM_S);
+	//	XFillRectangle(dpy, w, gc, 0, 0, hw, th);
+	//	/* re-round outer left corners */
+	//	XSetForeground(dpy, gc, OV_TAB_NORM_S);
+	//	XFillArc(dpy, w, gc, 0, 0,      2*r, 2*r, 90*64,  90*64);
+	//	XFillArc(dpy, w, gc, 0, th-2*r, 2*r, 2*r, 180*64, 90*64);
+	//}
+
+	//ov_text_c(w, gc, fb,
+	//	  cur == TAB_WINDOWS ? 0x050505UL : OV_TEXT_MID,
+	//	  "WINDOWS", 0, 0, hw, th);
+	//ov_text_c(w, gc, fb,
+	//	  cur == TAB_APPS ? 0x050505UL : OV_TEXT_MID,
+	//	  "APPLICATIONS", hw, 0, hw, th);
+
+	///* single outer border — dark, strictly inside window */
+	//unsigned long bdr = 0x252538UL;
+	//ov_rect_round(w, gc, bdr, 0, 0, tw, th, r);
+	///* centre divider */
+	//XSetForeground(dpy, gc, bdr);
+	//XDrawLine(dpy, w, gc, hw, r, hw, th - r - 1);
+}
+
+/* ── pager ──────────────────────────────────────────────────────────────── */
+static void
+ov_draw_pager(Window w, GC gc, XFontStruct *f,
+	      int page, int total_pages, int ww, int ph)
+{
+	    ov_fill_rect(w, gc, OV_PG_BG_S, 0, 0, ww, ph);
+
+    XSetForeground(dpy, gc, OV_SEP);
+    XDrawLine(dpy, w, gc, 0, 0, ww - 1, 0);
+
+    int can_prev = (page > 0);
+    int can_next = (page < total_pages - 1);
+
+    int bw2  = 120;
+    int bh2  = ph - 12;
+    int by2  = (ph - bh2) / 2;
+    int gap  = 20;
+    int ind_w = 100;
+    int total_row = bw2 + gap + ind_w + gap + bw2;
+    int sx   = (ww - total_row) / 2;
+
+    /* PREV */
+    {
+        int px = sx;
+        unsigned long fill = can_prev ? 0x1e2a3aUL : 0x12151aUL;
+        unsigned long bdr  = can_prev ? OV_BORDER_NORM : OV_TEXT_LO;
+        unsigned long tcol = can_prev ? OV_TEXT_HI     : OV_TEXT_LO;
+        ov_fill_rect(w, gc, fill, px, by2, bw2 - 1, bh2 - 1);
+        ov_rect_plain(w, gc, bdr, px, by2, bw2 - 1, bh2 - 1);
+        ov_text_c(w, gc, f, tcol, "<- PREV", px, by2, bw2 - 1, bh2 - 1);
+    }
+
+    /* indicator */
+    {
+        char ind[32];
+        snprintf(ind, sizeof(ind), "%d / %d", page + 1, MAX(1, total_pages));
+        int ix = sx + bw2 + gap;
+        ov_text_c(w, gc, f, OV_TEXT_MID, ind, ix, by2, ind_w, bh2 - 1);
+    }
+
+    /* NEXT */
+    {
+        int px = sx + bw2 + gap + ind_w + gap;
+        unsigned long fill = can_next ? 0x1e2a3aUL : 0x12151aUL;
+        unsigned long bdr  = can_next ? OV_BORDER_NORM : OV_TEXT_LO;
+        unsigned long tcol = can_next ? OV_TEXT_HI     : OV_TEXT_LO;
+        ov_fill_rect(w, gc, fill, px, by2, bw2 - 1, bh2 - 1);
+        ov_rect_plain(w, gc, bdr, px, by2, bw2 - 1, bh2 - 1);
+        ov_text_c(w, gc, f, tcol, "NEXT ->", px, by2, bw2 - 1, bh2 - 1);
+    }
+
+	///* pager strip background */
+	//ov_fill(w, gc, OV_PG_BG_S, 0, 0, ww, ph);
+	///* subtle top separator line */
+	//XSetForeground(dpy, gc, OV_SEP);
+	//XDrawLine(dpy, w, gc, 0, 0, ww - 1, 0);
+
+	//int can_prev = (page > 0);
+	//int can_next = (page < total_pages - 1);
+
+	///* Button geometry */
+	//int bw   = 120;   /* button width  */
+	//int bh2  = ph - 12; /* button height (pad 6 top+bottom) */
+	//int by   = (ph - bh2) / 2;
+	//int r    = OV_CORNER_R;
+
+	///* Indicator geometry — same gap on both sides */
+	//int gap   = 20;
+	//int ind_w = 100;
+	//int total_row = bw + gap + ind_w + gap + bw;
+	//int sx    = (ww - total_row) / 2;
+
+	///* ── PREV button ──────────────────────────────────────── */
+	//{
+	//	int px = sx;
+	//	/* fill: bright when active, very dim when disabled */
+	//	unsigned long fill = can_prev ? 0x1e2a3aUL : 0x12151aUL;
+	//	unsigned long bdr  = can_prev ? OV_BORDER_NORM : OV_TEXT_LO;
+	//	unsigned long tcol = can_prev ? OV_TEXT_HI     : OV_TEXT_LO;
+
+	//	/* solid rounded fill */
+	//	ov_fill_round(w, gc, fill, OV_PG_BG_S, px, by, bw - 1, bh2 - 1, r);
+	//	/* thin border, inset by 1 so it is completely inside the fill */
+	//	ov_rect_round(w, gc, bdr, px, by, bw - 1, bh2 - 1, r);
+
+	//	/* left-pointing arrow + label, centred */
+	//	ov_text_c(w, gc, f, tcol, "<- PREV", px, by, bw - 1, bh2 - 1);
+	//}
+
+	///* ── page indicator ───────────────────────────────────── */
+	//{
+	//	char ind[32];
+	//	snprintf(ind, sizeof(ind), "%d / %d", page + 1, MAX(1, total_pages));
+	//	int ix = sx + bw + gap;
+	//	ov_text_c(w, gc, f, OV_TEXT_MID, ind, ix, by, ind_w, bh2 - 1);
+	//}
+
+	///* ── NEXT button ──────────────────────────────────────── */
+	//{
+	//	int px = sx + bw + gap + ind_w + gap;
+	//	unsigned long fill = can_next ? 0x1e2a3aUL : 0x12151aUL;
+	//	unsigned long bdr  = can_next ? OV_BORDER_NORM : OV_TEXT_LO;
+	//	unsigned long tcol = can_next ? OV_TEXT_HI     : OV_TEXT_LO;
+
+	//	ov_fill_round(w, gc, fill, OV_PG_BG_S, px, by, bw - 1, bh2 - 1, r);
+	//	ov_rect_round(w, gc, bdr, px, by, bw - 1, bh2 - 1, r);
+
+	//	ov_text_c(w, gc, f, tcol, "NEXT ->", px, by, bw - 1, bh2 - 1);
+	//}
+}
+
+
+
+/* ==========================================================================
+ * SECTION 5 — icon & desktop helpers
+ * ========================================================================== */
+
+	static void
+ov_blit_pic(Drawable dst, Picture src,
+	    int dx, int dy, unsigned int w, unsigned int h)
+{
+	if (src == None) return;
+	XRenderPictFormat *vf =
+		XRenderFindVisualFormat(dpy, DefaultVisual(dpy, screen));
+	Picture dp = XRenderCreatePicture(dpy, dst, vf, 0, NULL);
+	XRenderComposite(dpy, PictOpOver, src, None, dp,
+			 0, 0, 0, 0, dx, dy, w, h);
+	XRenderFreePicture(dpy, dp);
+}
+
+static Picture
+ov_load_icon(const char *path, unsigned int sz)
+{
+	if (!path || !*path) return None;
+	Imlib_Image img = imlib_load_image(path);
+	if (!img) return None;
+	imlib_context_set_image(img);
+
+	XRenderPictFormat *fmt32 = XRenderFindStandardFormat(dpy, PictStandardARGB32);
+
+	Pixmap out_pm  = XCreatePixmap(dpy, root, sz, sz, 32);
+	Picture out_pic = XRenderCreatePicture(dpy, out_pm, fmt32, 0, NULL);
+	XRenderColor zero = {0, 0, 0, 0};
+	XRenderFillRectangle(dpy, PictOpSrc, out_pic, &zero, 0, 0, sz, sz);
+
+	/* probe for 32-bit TrueColor visual */
+	Visual *vis32 = NULL;
+	XVisualInfo tpl, *lst; int n = 0;
+	tpl.depth = 32; tpl.class = TrueColor; tpl.screen = screen;
+	lst = XGetVisualInfo(dpy, VisualDepthMask|VisualClassMask|VisualScreenMask, &tpl, &n);
+	if (lst && n > 0) vis32 = lst[0].visual;
+	if (lst) XFree(lst);
+
+	if (vis32) {
+		Pixmap px32 = XCreatePixmap(dpy, root, sz, sz, 32);
+		GC gc32 = XCreateGC(dpy, px32, 0, NULL);
+		XSetForeground(dpy, gc32, 0x00000000);
+		XFillRectangle(dpy, px32, gc32, 0, 0, sz, sz);
+		XFreeGC(dpy, gc32);
+
+		imlib_context_set_display(dpy);
+		imlib_context_set_visual(vis32);
+		imlib_context_set_colormap(DefaultColormap(dpy, screen));
+		imlib_context_set_drawable(px32);
+		imlib_context_set_blend(1);
+		imlib_render_image_on_drawable_at_size(0, 0, (int)sz, (int)sz);
+		imlib_free_image_and_decache();
+
+		Picture src = XRenderCreatePicture(dpy, px32, fmt32, 0, NULL);
+		XRenderComposite(dpy, PictOpOver, src, None, out_pic, 0,0,0,0,0,0,sz,sz);
+		XRenderFreePicture(dpy, src);
+		XFreePixmap(dpy, px32);
+	} else {
+		Pixmap vis_pm = XCreatePixmap(dpy, root, sz, sz, DefaultDepth(dpy,screen));
+		XSetForeground(dpy, DefaultGC(dpy, screen), OV_CARD_SOLID);
+		XFillRectangle(dpy, vis_pm, DefaultGC(dpy, screen), 0, 0, sz, sz);
+		imlib_context_set_display(dpy);
+		imlib_context_set_visual(DefaultVisual(dpy, screen));
+		imlib_context_set_colormap(DefaultColormap(dpy, screen));
+		imlib_context_set_drawable(vis_pm);
+		imlib_context_set_blend(1);
+		imlib_render_image_on_drawable_at_size(0, 0, (int)sz, (int)sz);
+		imlib_free_image_and_decache();
+
+		XRenderPictFormat *vf = XRenderFindVisualFormat(dpy, DefaultVisual(dpy,screen));
+		Picture vp = XRenderCreatePicture(dpy, vis_pm, vf, 0, NULL);
+		XRenderComposite(dpy, PictOpOver, vp, None, out_pic, 0,0,0,0,0,0,sz,sz);
+		XRenderFreePicture(dpy, vp);
+		XFreePixmap(dpy, vis_pm);
+	}
+
+	XFreePixmap(dpy, out_pm);
+	return out_pic;
+}
+
+
+
+	static void
+ov_find_icon(const char *name, char *out, size_t outsz)
+{
+	out[0] = '\0';
+	if (!name || !*name) return;
+	if (name[0] == '/') {
+		if (access(name, R_OK) == 0) {
+			strncpy(out, name, outsz-1); out[outsz-1] = '\0';
+		}
+		return;
+	}
+	char base[256];
+	snprintf(base, sizeof(base), "%s", name);
+	char *dot = strrchr(base, '.');
+	if (dot && (!strcmp(dot,".png")||!strcmp(dot,".svg")
+		    ||!strcmp(dot,".xpm")||!strcmp(dot,".jpg")))
+		*dot = '\0';
+
+	const char *exts[] = {".png", ".svg", ".xpm", NULL};
+	char path[2048];
+
+	/* mrrobotos — largest first */
+	const char *mr[] = {"512x512","256x256","128x128","96x96",
+		"64x64","48x48","scalable",NULL};
+	for (int si = 0; mr[si]; si++)
+		for (int ei = 0; exts[ei]; ei++) {
+			snprintf(path, sizeof(path),
+				 "/usr/share/icons/mrrobotos/%s/apps/%s%s",
+				 mr[si], base, exts[ei]);
+			if (access(path, R_OK) == 0) {
+				strncpy(out, path, outsz-1); out[outsz-1] = '\0'; return;
+			}
+		}
+	/* hicolor — largest first */
+	const char *hi[] = {"512x512","256x256","128x128","96x96",
+		"64x64","48x48","scalable",NULL};
+	for (int si = 0; hi[si]; si++)
+		for (int ei = 0; exts[ei]; ei++) {
+			snprintf(path, sizeof(path),
+				 "/usr/share/icons/hicolor/%s/apps/%s%s",
+				 hi[si], base, exts[ei]);
+			if (access(path, R_OK) == 0) {
+				strncpy(out, path, outsz-1); out[outsz-1] = '\0'; return;
+			}
+		}
+	/* pixmaps */
+	for (int ei = 0; exts[ei]; ei++) {
+		snprintf(path, sizeof(path), "/usr/share/pixmaps/%s%s", base, exts[ei]);
+		if (access(path, R_OK) == 0) {
+			strncpy(out, path, outsz-1); out[outsz-1] = '\0'; return;
+		}
+	}
+	/* Papirus */
+	const char *pp[] = {"64x64","48x48","32x32",NULL};
+	for (int si = 0; pp[si]; si++)
+		for (int ei = 0; exts[ei]; ei++) {
+			snprintf(path, sizeof(path),
+				 "/usr/share/icons/Papirus/%s/apps/%s%s",
+				 pp[si], base, exts[ei]);
+			if (access(path, R_OK) == 0) {
+				strncpy(out, path, outsz-1); out[outsz-1] = '\0'; return;
+			}
+		}
+}
+
+	static void
+ov_parse_one_dir(const char *dir, AppEntry **apps, int *count, int *cap)
+{
+	DIR *d = opendir(dir);
+	if (!d) return;
+	struct dirent *ent;
+	char path[1024];
+	while ((ent = readdir(d))) {
+		size_t nl = strlen(ent->d_name);
+		if (nl < 9 || strcmp(ent->d_name+nl-8, ".desktop") != 0) continue;
+		snprintf(path, sizeof(path), "%s/%s", dir, ent->d_name);
+		FILE *fp = fopen(path, "r");
+		if (!fp) continue;
+		char line[512], name[256]="", exec_v[512]="", icon[256]="";
+		int in_entry = 0, skip = 0;
+		while (fgets(line, sizeof(line), fp)) {
+		    line[strcspn(line, "\r\n")] = '\0';
+		    if (line[0] == '[') {
+		        in_entry = (strncmp(line, "[Desktop Entry]", 15) == 0);
+		        continue;
+		    }
+		    if (!in_entry) continue;
+		    if (!name[0]   && strncmp(line, "Name=",  5) == 0) {
+			    strncpy(name, line+5, sizeof(name)-1);
+			    name[sizeof(name)-1]='\0';
+		    }
+		    if (!exec_v[0] && strncmp(line, "Exec=",  5) == 0)
+		        snprintf(exec_v, sizeof(exec_v), "%s", line+5);
+		    if (!icon[0]   && strncmp(line, "Icon=",  5) == 0) {
+			    strncpy(icon, line+5, sizeof(icon)-1);
+			    icon[sizeof(icon)-1]='\0';
+		    }
+		    if (strncmp(line, "NoDisplay=true", 14) == 0) skip = 1;
+		    if (strncmp(line, "Hidden=true",    11) == 0) skip = 1;
+		    if (strncmp(line, "Type=", 5) == 0
+		        && strncmp(line+5, "Application", 11) != 0) skip = 1;
+		}
+
+		fclose(fp);
+		if (skip || !name[0] || !exec_v[0]) continue;
+		int dup = 0;
+		for (int i = 0; i < *count; i++)
+			if (strcmp((*apps)[i].name, name) == 0) { dup = 1; break; }
+		if (dup) continue;
+		if (*count >= *cap) {
+			*cap = *cap ? *cap*2 : 128;
+			*apps = realloc(*apps, (size_t)*cap * sizeof(AppEntry));
+		}
+		AppEntry *a = &(*apps)[(*count)++];
+		memset(a, 0, sizeof(*a));
+		snprintf(a->name,      sizeof(a->name),      "%s", name);
+		snprintf(a->exec,      sizeof(a->exec),       "%s", exec_v);
+		a->icon_pic = None;
+		char ipath[512];
+		ov_find_icon(icon, ipath, sizeof(ipath));
+		snprintf(a->icon_path, sizeof(a->icon_path), "%s", ipath);
+	}
+	closedir(d);
+}
+
+
+	static int
+ov_app_cmp(const void *a, const void *b)
+{
+	const AppEntry *x = (const AppEntry*)a;
+	const AppEntry *y = (const AppEntry*)b;
+	int xn = (x->name[0] >= '0' && x->name[0] <= '9');
+	int yn = (y->name[0] >= '0' && y->name[0] <= '9');
+	if (xn != yn) return yn - xn;
+	return strcasecmp(x->name, y->name);
+}
+
+	static int
+ov_parse_desktop_files(AppEntry **out, int *count)
+{
+	*out = NULL; *count = 0; int cap = 0;
+	ov_parse_one_dir("/usr/share/applications", out, count, &cap);
+	qsort(*out, (size_t)*count, sizeof(AppEntry), ov_app_cmp);
+	return *count;
+}
+
+	static void
+ov_free_apps(AppEntry *apps, int count)
+{
+	for (int i = 0; i < count; i++)
+		if (apps[i].icon_pic != None)
+			XRenderFreePicture(dpy, apps[i].icon_pic);
+	free(apps);
+}
+
+	static void
+ov_launch(const char *exec_raw)
+{
+	char clean[1024]; int oi = 0;
+	for (const char *p = exec_raw; *p && oi < (int)sizeof(clean)-1; p++) {
+		if (*p == '%' && *(p+1)) { p++; continue; }
+		clean[oi++] = *p;
+	}
+	clean[oi] = '\0';
+	while (oi > 0 && clean[oi-1] == ' ') clean[--oi] = '\0';
+	if (fork() == 0) {
+		setsid();
+		execl("/bin/sh", "sh", "-c", clean, NULL);
+		_exit(127);
+	}
+}
+
+	static int
+ov_count_running(AppEntry *a)
+{
+	char ln[256];
+	snprintf(ln, sizeof(ln), "%s", a->name);
+	for (int i = 0; ln[i]; i++)
+		ln[i] = (char)tolower((unsigned char)ln[i]);
+	int cnt = 0;
+	Monitor *mn; Client *c;
+	for (mn = mons; mn; mn = mn->next)
+		for (c = mn->clients; c; c = c->next) {
+			if (ispanel(c)) continue;
+			char cn[256];
+			snprintf(cn, sizeof(cn), "%s", c->name);
+			for (int i = 0; cn[i]; i++)
+				cn[i] = (char)tolower((unsigned char)cn[i]);
+			if (strstr(cn, ln) || strstr(ln, cn)) cnt++;
+		}
+	return cnt;
+}
+
+	static Window
+ov_make_card_win(Window parent, int cx, int cy, int cw, int ch,
+		 unsigned long bg)
+{
+	XSetWindowAttributes wa2;
+	wa2.override_redirect = True;
+	wa2.background_pixel  = bg;
+	wa2.event_mask = ButtonPressMask | EnterWindowMask |
+		LeaveWindowMask | ExposureMask;
+	return XCreateWindow(dpy, parent, cx, cy,
+			     (unsigned)cw, (unsigned)ch, 0,
+			     DefaultDepth(dpy, screen), InputOutput,
+			     DefaultVisual(dpy, screen),
+			     CWOverrideRedirect|CWBackPixel|CWEventMask, &wa2);
+}
+
+/* ==========================================================================
+ * SECTION 6 — card renderers
+ * ========================================================================== */
+static void
+ov_draw_win_card(Window cw, GC gc, XFontStruct *f,
+                 Client *c, int hovered, int selected,
+                 unsigned int cardw, unsigned int cardh)
+{
+    int img_h = (int)cardh - OV_TITLEBAR_H;
+    if (img_h < 1) img_h = 1;
+
+    unsigned long bg = hovered ? OV_CARD_HOV_S : OV_CARD_SOLID;
+
+    /* FIX 2: plain rectangle, no rounding */
+    ov_fill_rect(cw, gc, bg, 0, 0, (int)cardw, (int)cardh);
+
+    if (c && c->pre.scaled_image)
+        XPutImage(dpy, cw, gc, c->pre.scaled_image,
+                  0, 0, 0, 0,
+                  MIN((unsigned)c->pre.scaled_image->width,  cardw),
+                  MIN((unsigned)c->pre.scaled_image->height, (unsigned)img_h));
+
+    /* titlebar background */
+    ov_fill_rect(cw, gc, hovered ? OV_CARD_HOV_S : OV_TITLEBAR_S,
+                 0, img_h, (int)cardw, OV_TITLEBAR_H);
+
+    if (c) {
+        /* FIX 3: icon as large as possible with equal top/bottom padding */
+        #define TB_VPAD  6            /* equal top & bottom padding in px */
+        int ico_sz = OV_TITLEBAR_H - 2 * TB_VPAD;
+        if (ico_sz < 4) ico_sz = 4;
+        int gap = 8;
+
+        unsigned long txt_col = hovered ? OV_TEXT_HI : OV_TEXT_MID;
+        int has_icon = (c->icon != None);
+        int avail    = (int)cardw - TB_VPAD * 2;  /* reuse same small pad for sides */
+
+        /* Vertical centre of icon inside titlebar */
+        int ico_y = img_h + TB_VPAD;
+
+        /* Text baseline — align with vertical centre of icon */
+        int ico_cy = ico_y + ico_sz / 2;  /* icon centre y */
+        int ty     = ico_cy + (f ? (f->ascent - f->descent) / 2 : 6);
+        /* clamp */
+        if (ty < img_h + (f ? f->ascent : 14)) ty = img_h + (f ? f->ascent : 14);
+        if (ty > img_h + OV_TITLEBAR_H - 2)    ty = img_h + OV_TITLEBAR_H - 2;
+
+        if (has_icon) {
+            int text_max = avail - ico_sz - gap;
+            if (text_max < 20) text_max = 20;
+
+            char tbuf[256];
+            snprintf(tbuf, sizeof(tbuf), "%s", c->name);
+            if (f) {
+                while ((int)strlen(tbuf) > 3 &&
+                       XTextWidth(f, tbuf, (int)strlen(tbuf)) > text_max)
+                    tbuf[strlen(tbuf)-1] = '\0';
+                if (strcmp(tbuf, c->name) != 0)
+                    strncat(tbuf, "...", sizeof(tbuf)-strlen(tbuf)-1);
+            }
+            int text_w = f ? XTextWidth(f, tbuf, (int)strlen(tbuf))
+                           : (int)strlen(tbuf) * 10;
+
+            int block_w = ico_sz + gap + text_w;
+            if (block_w > avail) block_w = avail;
+            int bx = ((int)cardw - block_w) / 2;
+
+            ov_blit_pic(cw, c->icon, bx, ico_y, (unsigned)ico_sz, (unsigned)ico_sz);
+
+            int tx2 = bx + ico_sz + gap;
+            if (f) XSetFont(dpy, gc, f->fid);
+            XSetForeground(dpy, gc, txt_col);
+            XDrawString(dpy, cw, gc, tx2, ty, tbuf, (int)strlen(tbuf));
+        } else {
+            char tbuf[256];
+            snprintf(tbuf, sizeof(tbuf), "%s", c->name);
+            if (f) {
+                while ((int)strlen(tbuf) > 3 &&
+                       XTextWidth(f, tbuf, (int)strlen(tbuf)) > avail)
+                    tbuf[strlen(tbuf)-1] = '\0';
+                if (strcmp(tbuf, c->name) != 0)
+                    strncat(tbuf, "...", sizeof(tbuf)-strlen(tbuf)-1);
+            }
+            ov_text_c(cw, gc, f, txt_col, tbuf,
+                      TB_VPAD, img_h, avail, OV_TITLEBAR_H);
+        }
+        #undef TB_VPAD
+    }
+
+    /* FIX 2: plain rectangle border */
+    unsigned long bdr = (selected || hovered) ? OV_WIN_SEL_BDR : OV_BORDER_NORM;
+    ov_rect_plain(cw, gc, bdr, 0, 0, (int)cardw - 1, (int)cardh - 1);
+}
+
+//static void
+//ov_draw_win_card(Window cw, GC gc, XFontStruct *f,
+//		 Client *c, int hovered, int selected,
+//		 unsigned int cardw, unsigned int cardh)
+//{
+//	int img_h = (int)cardh - OV_TITLEBAR_H;
+//	if (img_h < 1) img_h = 1;
+//
+//	unsigned long bg = hovered ? OV_CARD_HOV_S : OV_CARD_SOLID;
+//	ov_fill_round(cw, gc, bg, OV_DIM, 0, 0, (int)cardw - 1, (int)cardh - 1, OV_CORNER_R);
+//
+//	if (c && c->pre.scaled_image)
+//		XPutImage(dpy, cw, gc, c->pre.scaled_image,
+//			  0, 0, 0, 0,
+//			  MIN((unsigned)c->pre.scaled_image->width,  cardw),
+//			  MIN((unsigned)c->pre.scaled_image->height, (unsigned)img_h));
+//
+//	/* titlebar background */
+//	ov_fill(cw, gc, hovered ? OV_CARD_HOV_S : OV_TITLEBAR_S,
+//		0, img_h, (int)cardw, OV_TITLEBAR_H);
+//
+//	if (c) {
+//		#define TB_PAD 10          /* equal left and right padding */
+//		int ico_sz  = OV_TITLEBAR_H - 14;  /* slightly larger icon */
+//		int gap     = 8;
+//		unsigned long txt_col = hovered ? OV_TEXT_HI : OV_TEXT_MID;
+//		int has_icon = (c->icon != None);
+//		int avail    = (int)cardw - TB_PAD * 2;
+//
+//		if (has_icon) {
+//			/* Measure truncated text that fits in the available slot */
+//			int text_max = avail - ico_sz - gap;
+//			if (text_max < 20) text_max = 20;
+//
+//			/* How wide is the text after truncation? */
+//			char tbuf[256];
+//			snprintf(tbuf, sizeof(tbuf), "%s", c->name);
+//			if (f) {
+//				while ((int)strlen(tbuf) > 3 &&
+//				       XTextWidth(f, tbuf, (int)strlen(tbuf)) > text_max)
+//					tbuf[strlen(tbuf) - 1] = '\0';
+//				if (strcmp(tbuf, c->name) != 0)
+//					strncat(tbuf, "...", sizeof(tbuf) - strlen(tbuf) - 1);
+//			}
+//			int text_w = f ? XTextWidth(f, tbuf, (int)strlen(tbuf))
+//				       : (int)strlen(tbuf) * 10;
+//
+//			/* Centre the icon+gap+text block */
+//			int block_w = ico_sz + gap + text_w;
+//			if (block_w > avail) block_w = avail;
+//			int bx = ((int)cardw - block_w) / 2;
+//
+//			/* vertical centre in titlebar */
+//			int ico_y = img_h + (OV_TITLEBAR_H - ico_sz) / 2;
+//			ov_blit_pic(cw, c->icon, bx, ico_y, (unsigned)ico_sz, (unsigned)ico_sz);
+//
+//			/* draw text — vertically centred */
+//			int tx = bx + ico_sz + gap;
+//			int ty = img_h + (OV_TITLEBAR_H + (f ? f->ascent : 14) - (f ? f->descent : 3)) / 2;
+//			if (f) XSetFont(dpy, gc, f->fid);
+//			XSetForeground(dpy, gc, txt_col);
+//			XDrawString(dpy, cw, gc, tx, ty, tbuf, (int)strlen(tbuf));
+//		} else {
+//			/* No icon — just centre text */
+//			char tbuf[256];
+//			snprintf(tbuf, sizeof(tbuf), "%s", c->name);
+//			if (f) {
+//				while ((int)strlen(tbuf) > 3 &&
+//				       XTextWidth(f, tbuf, (int)strlen(tbuf)) > avail)
+//					tbuf[strlen(tbuf) - 1] = '\0';
+//				if (strcmp(tbuf, c->name) != 0)
+//					strncat(tbuf, "...", sizeof(tbuf) - strlen(tbuf) - 1);
+//			}
+//			ov_text_c(cw, gc, f, txt_col, tbuf,
+//				  TB_PAD, img_h, avail, OV_TITLEBAR_H);
+//		}
+//		#undef TB_PAD
+//	}
+//
+//	unsigned long bdr = (selected || hovered) ? OV_WIN_SEL_BDR : OV_BORDER_NORM;
+//	ov_rect_round(cw, gc, bdr, 0, 0, (int)cardw - 1, (int)cardh - 1, OV_CORNER_R);
+//}
+//
+
+static void
+ov_draw_app_card(Window cw, GC gc, XFontStruct *f,
+                 AppEntry *a, int hovered, int selected,
+                 unsigned int cardw, unsigned int cardh)
+{
+	unsigned long bg = hovered ? OV_CARD_HOV_S : OV_CARD_SOLID;
+	ov_fill(cw, gc, bg, 0, 0, (int)cardw, (int)cardh);
+	//ov_fill_round(cw, gc, bg, OV_DIM, 0, 0, (int)cardw - 1, (int)cardh - 1, OV_CORNER_R);
+
+	int txt_h      = f ? (f->ascent + f->descent + 10) : 26;
+	int pill_h     = OV_RUN_PILL_H + 8;  /* always reserve */
+	int bottom_pad = 10;
+	int bottom_reserve = txt_h + pill_h + bottom_pad;
+
+	/* icon: same approach as original ov_draw_run_card — size from cardh, cap at 44 */
+	int pad    = 14;
+	int ico_sz = (int)cardh - pad * 2;
+	if (ico_sz > 56) ico_sz = 56;
+	if (ico_sz < 4)  ico_sz = 4;
+
+	/* centre horizontally; vertically centre in the space above the text reserve */
+	int icon_zone_h = (int)cardh - bottom_reserve;
+	int ico_x = ((int)cardw - ico_sz) / 2;
+	int ico_y = (icon_zone_h - ico_sz) / 2;
+	if (ico_y < 0) ico_y = 0;
+
+	if (a->icon_pic != None) {
+		ov_blit_pic(cw, a->icon_pic, ico_x, ico_y, (unsigned)ico_sz, (unsigned)ico_sz);
+	} else {
+		Picture fb = ov_load_icon(
+			"/usr/share/icons/Adwaita/scalable/mimetypes/application-x-addon.svg",
+			(unsigned)ico_sz);
+		if (fb != None) {
+			ov_blit_pic(cw, fb, ico_x, ico_y, (unsigned)ico_sz, (unsigned)ico_sz);
+			XRenderFreePicture(dpy, fb);
+		} else {
+			ov_fill(cw, gc, OV_SEP, ico_x, ico_y, ico_sz, ico_sz);
+			ov_text_c(cw, gc, f, OV_TEXT_LO, "?", ico_x, ico_y, ico_sz, ico_sz);
+		}
+	}
+
+	int text_y = (int)cardh - bottom_reserve;
+	ov_text_cc(cw, gc, f,
+		   hovered ? OV_TEXT_HI : OV_TEXT_MID,
+		   a->name, 4, text_y, (int)cardw - 8, txt_h);
+
+	if (a->running) {
+		int py = (int)cardh - OV_RUN_PILL_H - (bottom_pad / 2 + 2);
+		int px = ((int)cardw - OV_RUN_PILL_W) / 2;
+		ov_fill_pill(cw, gc, OV_ACCENT, px, py, OV_RUN_PILL_W, OV_RUN_PILL_H);
+	}
+
+	unsigned long bdr = (selected || hovered) ? OV_WIN_SEL_BDR : OV_BORDER_NORM;
+	//ov_rect_round(cw, gc, bdr, 0, 0, (int)cardw - 1, (int)cardh - 1, OV_CORNER_R);
+	ov_rect_plain(cw, gc, bdr, 0, 0, (int)cardw - 1, (int)cardh - 1);
+}
+
+
+
+
+//static void
+//ov_draw_app_card(Window cw, GC gc, XFontStruct *f,
+//		 AppEntry *a, int hovered, int selected,
+//		 unsigned int cardw, unsigned int cardh)
+//{
+//	unsigned long bg = hovered ? OV_CARD_HOV_S : OV_CARD_SOLID;
+//	/* border inset by 1 */
+//	ov_fill_round(cw, gc, bg, OV_DIM, 0, 0, (int)cardw - 1, (int)cardh - 1, OV_CORNER_R);
+//
+//	int txt_h          = f ? (f->ascent + f->descent + 10) : 26;
+//	int pill_h         = a->running ? OV_RUN_PILL_H + 8 : 0;
+//	int bottom_pad     = 10;
+//	int bottom_reserve = txt_h + pill_h + bottom_pad;
+//	int top_pad        = bottom_reserve;  /* equal top & bottom */
+//	int avail_h        = (int)cardh - top_pad - bottom_reserve;
+//
+//	if (avail_h < 16) {
+//		top_pad        = 8;
+//		bottom_reserve = txt_h + pill_h + 8;
+//		avail_h        = (int)cardh - top_pad - bottom_reserve;
+//	}
+//	if (avail_h < 16) avail_h = 16;
+//
+//	int ico_sz = (int)OV_ICON_SZ;
+//	if (ico_sz > avail_h) ico_sz = avail_h;
+//	if (ico_sz < 16)      ico_sz = 16;
+//	int ico_y = top_pad + (avail_h - ico_sz) / 2;
+//	int ico_x = ((int)cardw - ico_sz) / 2;
+//
+//	if (a->icon_pic != None) {
+//		ov_blit_pic(cw, a->icon_pic, ico_x, ico_y, (unsigned)ico_sz, (unsigned)ico_sz);
+//	} else {
+//		ov_fill(cw, gc, OV_SEP, ico_x, ico_y, ico_sz, ico_sz);
+//		ov_text_c(cw, gc, f, OV_TEXT_LO, "?", ico_x, ico_y, ico_sz, ico_sz);
+//	}
+//
+//	int text_y = (int)cardh - bottom_reserve;
+//	ov_text_cc(cw, gc, f,
+//		   hovered ? OV_TEXT_HI : OV_TEXT_MID,
+//		   a->name, 4, text_y, (int)cardw - 8, txt_h);
+//
+//	if (a->running) {
+//		int py = (int)cardh - OV_RUN_PILL_H - (bottom_pad / 2 + 2);
+//		int px = ((int)cardw - OV_RUN_PILL_W) / 2;
+//		ov_fill_pill(cw, gc, OV_ACCENT, px, py, OV_RUN_PILL_W, OV_RUN_PILL_H);
+//	}
+//
+//	unsigned long bdr = (selected || hovered) ? OV_WIN_SEL_BDR : OV_BORDER_NORM;
+//	ov_rect_round(cw, gc, bdr, 0, 0, (int)cardw - 1, (int)cardh - 1, OV_CORNER_R);
+//}
+
+static void
+ov_draw_run_card(Window cw, GC gc, XFontStruct *f,
+		 const char *line1, const char *line2,
+		 Picture icon, int hovered, int selected,
+		 int special, unsigned long spec_col,
+		 unsigned int cardw, unsigned int cardh)
+{
+	unsigned long bg = hovered ? OV_CARD_HOV_S : OV_CARD_SOLID;
+	//ov_fill_round(cw, gc, bg, OV_DIM, 0, 0, (int)cardw - 1, (int)cardh - 1, OV_CORNER_R);
+	ov_fill(cw, gc, bg, 0, 0, (int)cardw, (int)cardh);
+
+	int has2       = (line2 && *line2);
+	int line_h     = f ? (f->ascent + f->descent + 4) : 20;
+	int txt_h      = has2 ? (line_h * 2 + 4) : line_h;
+	int pill_h     = OV_RUN_PILL_H + 8;
+	int bottom_pad = 10;
+	int bottom_reserve = txt_h + pill_h + bottom_pad;
+
+	/* same icon sizing as ov_draw_app_card */
+	int pad    = 14;
+	int ico_sz = (int)cardh - pad * 2;
+	if (ico_sz > 56) ico_sz = 56;
+	if (ico_sz < 4)  ico_sz = 4;
+
+	int icon_zone_h = (int)cardh - bottom_reserve;
+	int ico_x = ((int)cardw - ico_sz) / 2;
+	int ico_y = (icon_zone_h - ico_sz) / 2;
+	if (ico_y < 0) ico_y = 0;
+
+	if (icon != None) {
+		ov_blit_pic(cw, icon, ico_x, ico_y, (unsigned)ico_sz, (unsigned)ico_sz);
+	} else if (special) {
+		int ax = ico_x + ico_sz / 2, ay = ico_y + ico_sz / 2;
+		int aw = ico_sz * 2 / 3;
+		XSetForeground(dpy, gc, spec_col ? spec_col : OV_TEXT_MID);
+		XDrawLine(dpy, cw, gc, ax-aw/2, ay,   ax+aw/2,      ay);
+		XDrawLine(dpy, cw, gc, ax-aw/2, ay,   ax-aw/2+aw/3, ay-aw/3);
+		XDrawLine(dpy, cw, gc, ax-aw/2, ay,   ax-aw/2+aw/3, ay+aw/3);
+		XDrawLine(dpy, cw, gc, ax-aw/2, ay+1, ax+aw/2,      ay+1);
+		XDrawLine(dpy, cw, gc, ax-aw/2, ay+1, ax-aw/2+aw/3, ay-aw/3+1);
+		XDrawLine(dpy, cw, gc, ax-aw/2, ay+1, ax-aw/2+aw/3, ay+aw/3+1);
+	} else {
+		Picture fb = ov_load_icon(
+			"/usr/share/icons/Adwaita/scalable/mimetypes/application-x-addon.svg",
+			(unsigned)ico_sz);
+		if (fb != None) {
+			ov_blit_pic(cw, fb, ico_x, ico_y, (unsigned)ico_sz, (unsigned)ico_sz);
+			XRenderFreePicture(dpy, fb);
+		} else {
+			ov_fill(cw, gc, OV_SEP, ico_x, ico_y, ico_sz, ico_sz);
+			ov_text_c(cw, gc, f, OV_TEXT_LO, "?", ico_x, ico_y, ico_sz, ico_sz);
+		}
+	}
+
+	int text_y = (int)cardh - bottom_reserve;
+	if (has2) {
+		ov_text_cc(cw, gc, f,
+			   hovered ? OV_TEXT_HI : OV_TEXT_MID,
+			   line1, 4, text_y, (int)cardw - 8, line_h);
+		ov_text_cc(cw, gc, f, OV_TEXT_MID,
+			   line2, 4, text_y + line_h + 4, (int)cardw - 8, line_h);
+	} else {
+		ov_text_cc(cw, gc, f,
+			   hovered ? OV_TEXT_HI : OV_TEXT_MID,
+			   line1, 4, text_y, (int)cardw - 8, txt_h);
+	}
+
+	unsigned long bdr = (selected || hovered) ? OV_WIN_SEL_BDR : OV_BORDER_NORM;
+	//ov_rect_round(cw, gc, bdr, 0, 0, (int)cardw - 1, (int)cardh - 1, OV_CORNER_R);
+	ov_rect_plain(cw, gc, bdr, 0, 0, (int)cardw - 1, (int)cardh - 1);
+}
+
+
+
+//static void
+//ov_draw_run_card(Window cw, GC gc, XFontStruct *f,
+//		 const char *line1, const char *line2,
+//		 Picture icon, int hovered, int selected,
+//		 int special, unsigned long spec_col,
+//		 unsigned int cardw, unsigned int cardh)
+//{
+//	unsigned long bg = hovered ? OV_CARD_HOV_S : OV_CARD_SOLID;
+//	ov_fill_round(cw, gc, bg, OV_DIM, 0, 0, (int)cardw - 1, (int)cardh - 1, OV_CORNER_R);
+//
+//	int pad    = 14;
+//	int ico_sz = (int)cardh - pad * 2;
+//	if (ico_sz > 44) ico_sz = 44;
+//	if (ico_sz < 16) ico_sz = 16;
+//	/* Icon is truly centred vertically in the card */
+//	int ico_x = pad;
+//	int ico_y = ((int)cardh - ico_sz) / 2;
+//
+//	if (icon != None) {
+//		ov_blit_pic(cw, icon, ico_x, ico_y, (unsigned)ico_sz, (unsigned)ico_sz);
+//	} else if (special) {
+//		/* Back arrow, centred in the icon zone */
+//		int ax = ico_x + ico_sz / 2, ay = (int)cardh / 2;
+//		int aw = ico_sz * 2 / 3;
+//		XSetForeground(dpy, gc, spec_col ? spec_col : OV_TEXT_MID);
+//		XDrawLine(dpy, cw, gc, ax - aw / 2, ay,     ax + aw / 2,          ay);
+//		XDrawLine(dpy, cw, gc, ax - aw / 2, ay,     ax - aw / 2 + aw / 3, ay - aw / 3);
+//		XDrawLine(dpy, cw, gc, ax - aw / 2, ay,     ax - aw / 2 + aw / 3, ay + aw / 3);
+//		/* thicker second pass */
+//		XDrawLine(dpy, cw, gc, ax - aw / 2, ay + 1, ax + aw / 2,          ay + 1);
+//		XDrawLine(dpy, cw, gc, ax - aw / 2, ay + 1, ax - aw / 2 + aw / 3, ay - aw / 3 + 1);
+//		XDrawLine(dpy, cw, gc, ax - aw / 2, ay + 1, ax - aw / 2 + aw / 3, ay + aw / 3 + 1);
+//	}
+//
+//	int tx   = ico_x + ico_sz + pad;
+//	int tw   = (int)cardw - tx - pad;
+//	int has2 = (line2 && *line2);
+//
+//	if (has2) {
+//		int line_h  = f ? (f->ascent + f->descent + 4) : 20;
+//		int block_h = line_h * 2 + 4;
+//		int start_y = ((int)cardh - block_h) / 2;
+//		if (start_y < 2) start_y = 2;
+//
+//		/* line 1 */
+//		int ty1 = start_y + (f ? f->ascent : 14);
+//		if (f) XSetFont(dpy, gc, f->fid);
+//		char buf1[256]; snprintf(buf1, sizeof(buf1), "%s", line1);
+//		if (f) {
+//			while ((int)strlen(buf1) > 3 && XTextWidth(f, buf1, (int)strlen(buf1)) > tw)
+//				buf1[strlen(buf1) - 1] = '\0';
+//			if (strcmp(buf1, line1) != 0) strncat(buf1, "...", sizeof(buf1)-strlen(buf1)-1);
+//		}
+//		XSetForeground(dpy, gc, hovered ? OV_TEXT_HI : OV_TEXT_MID);
+//		XDrawString(dpy, cw, gc, tx, ty1, buf1, (int)strlen(buf1));
+//
+//		/* line 2 */
+//		int ty2 = start_y + line_h + 4 + (f ? f->ascent : 14);
+//		char buf2[256]; snprintf(buf2, sizeof(buf2), "%s", line2);
+//		if (f) {
+//			while ((int)strlen(buf2) > 3 && XTextWidth(f, buf2, (int)strlen(buf2)) > tw)
+//				buf2[strlen(buf2) - 1] = '\0';
+//			if (strcmp(buf2, line2) != 0) strncat(buf2, "...", sizeof(buf2)-strlen(buf2)-1);
+//		}
+//		XSetForeground(dpy, gc, OV_TEXT_MID);
+//		XDrawString(dpy, cw, gc, tx, ty2, buf2, (int)strlen(buf2));
+//	} else {
+//		ov_text_l(cw, gc, f, hovered ? OV_TEXT_HI : OV_TEXT_MID,
+//			  line1, tx, 0, tw, (int)cardh);
+//	}
+//
+//	unsigned long bdr = (selected || hovered) ? OV_WIN_SEL_BDR : OV_BORDER_NORM;
+//	ov_rect_round(cw, gc, bdr, 0, 0, (int)cardw - 1, (int)cardh - 1, OV_CORNER_R);
+//}
+
+
+/* ==========================================================================
+ * SECTION 7 — previewallwin / previewallwinwrap
+ * ========================================================================== */
+
+/* Build the running-app picker text lines without snprintf truncation */
+	static void
+ov_run_launch_text(char *buf, size_t bufsz, const char *appname)
+{
+	/* "Launch new  " prefix is 12 chars, leave rest for appname */
+	size_t pfx = 12;
+	size_t room = bufsz - pfx - 1;
+	memcpy(buf, "Launch new ", pfx);
+	strncpy(buf + pfx, appname, room);
+	buf[pfx + room] = '\0';
+}
+
+	static void
+ov_run_app_text(char *buf, size_t bufsz, const char *appname)
+{
+	/* "App: " prefix is 5 chars */
+	size_t pfx = 5;
+	size_t room = bufsz - pfx - 1;
+	memcpy(buf, "App: ", pfx);
+	strncpy(buf + pfx, appname, room);
+	buf[pfx + room] = '\0';
+}
+
+	static void
+ov_run_title_text(char *buf, size_t bufsz, const char *title)
+{
+	size_t pfx = 7;
+	size_t room = bufsz - pfx - 1;
+	memcpy(buf, "Title: ", pfx);
+	strncpy(buf + pfx, title, room);
+	buf[pfx + room] = '\0';
+}
+
+
 /* function implementations */
-void
+	void
 applyrules(Client *c)
 {
 	const char *class, *instance;
@@ -415,8 +1668,8 @@ applyrules(Client *c)
 	for (i = 0; i < LENGTH(rules); i++) {
 		r = &rules[i];
 		if ((!r->title || strstr(c->name, r->title))
-		&& (!r->class || strstr(class, r->class))
-		&& (!r->instance || strstr(instance, r->instance)))
+		    && (!r->class || strstr(class, r->class))
+		    && (!r->instance || strstr(instance, r->instance)))
 		{
 			c->isterminal = r->isterminal;
 			c->noswallow = r->noswallow;
@@ -435,7 +1688,7 @@ applyrules(Client *c)
 	c->tags = c->tags & TAGMASK ? c->tags & TAGMASK : c->mon->tagset[c->mon->seltags];
 }
 
-void
+	void
 swallow(Client *p, Client *c)
 {
 
@@ -463,7 +1716,7 @@ swallow(Client *p, Client *c)
 	updateclientlist();
 }
 
-void
+	void
 unswallow(Client *c)
 {
 	c->win = c->swallowing->win;
@@ -482,7 +1735,7 @@ unswallow(Client *c)
 	arrange(c->mon);
 }
 
-int
+	int
 applysizehints(Client *c, int *x, int *y, int *w, int *h, int interact)
 {
 	int baseismin;
@@ -550,7 +1803,7 @@ applysizehints(Client *c, int *x, int *y, int *w, int *h, int interact)
 	return *x != c->x || *y != c->y || *w != c->w || *h != c->h;
 }
 
-void
+	void
 arrange(Monitor *m)
 {
 	if (m)
@@ -564,7 +1817,7 @@ arrange(Monitor *m)
 		arrangemon(m);
 }
 
-void
+	void
 arrangemon(Monitor *m)
 {
 	strncpy(m->ltsymbol, m->lt[m->sellt]->symbol, sizeof m->ltsymbol);
@@ -572,21 +1825,21 @@ arrangemon(Monitor *m)
 		m->lt[m->sellt]->arrange(m);
 }
 
-void
+	void
 attach(Client *c)
 {
 	c->next = c->mon->clients;
 	c->mon->clients = c;
 }
 
-void
+	void
 attachstack(Client *c)
 {
 	c->snext = c->mon->stack;
 	c->mon->stack = c;
 }
 
-void
+	void
 buttonpress(XEvent *e)
 {
 	unsigned int i, x, click;
@@ -622,9 +1875,9 @@ buttonpress(XEvent *e)
 				}
 			} else if (ev->x < x + TEXTW(selmon->ltsymbol)) {
 				click = ClkLtSymbol;
-			//else if (ev->x > selmon->ww - (int)TEXTW(stext))
-			/* 2px right padding */
-			//else if (ev->x > selmon->ww - TEXTW(stext) + lrpad - 2)
+				//else if (ev->x > selmon->ww - (int)TEXTW(stext))
+				/* 2px right padding */
+				//else if (ev->x > selmon->ww - TEXTW(stext) + lrpad - 2)
 			} else if (ev->x > selmon->ww - statusw) {
 				x = selmon->ww - statusw;
 				click = ClkStatusText;
@@ -651,8 +1904,8 @@ buttonpress(XEvent *e)
 						while (*s && *s != '^') s++;
 					}
 				}
-			//else
-			//	click = ClkWinTitle;
+				//else
+				//	click = ClkWinTitle;
 			} else {
 				x += TEXTW(selmon->ltsymbol);
 				if (m->bt > 0) {
@@ -706,16 +1959,18 @@ buttonpress(XEvent *e)
 		focus(c);
 		restack(selmon);
 		XAllowEvents(dpy, ReplayPointer, CurrentTime);
+		if (ispanel(c))
+			return;
 		click = ClkClientWin;
 	}
 	for (i = 0; i < LENGTH(buttons); i++)
 		if (click == buttons[i].click && buttons[i].func && buttons[i].button == ev->button
-		&& CLEANMASK(buttons[i].mask) == CLEANMASK(ev->state))
+		    && CLEANMASK(buttons[i].mask) == CLEANMASK(ev->state))
 			//buttons[i].func(click == ClkTagBar && buttons[i].arg.i == 0 ? &arg : &buttons[i].arg);
 			buttons[i].func((click == ClkTagBar || click == ClkWinTitle) && buttons[i].arg.i == 0 ? &arg : &buttons[i].arg);
 }
 
-void
+	void
 centeredmaster(Monitor *m)
 {
 	unsigned int i, n, h, mw, mx, my, oty, ety, tw;
@@ -747,30 +2002,30 @@ centeredmaster(Monitor *m)
 	oty = 0;
 	ety = 0;
 	for (i = 0, c = nexttiled(m->clients); c; c = nexttiled(c->next), i++)
-	if (i < m->nmaster) {
-		/* nmaster clients are stacked vertically, in the center
-		 * of the screen */
-		h = (m->wh - my) / (MIN(n, m->nmaster) - i);
-		resize(c, m->wx + mx, m->wy + my, mw - (2*c->bw),
-		       h - (2*c->bw), 0);
-		my += HEIGHT(c);
-	} else {
-		/* stack clients are stacked vertically */
-		if ((i - m->nmaster) % 2 ) {
-			h = (m->wh - ety) / ( (1 + n - i) / 2);
-			resize(c, m->wx, m->wy + ety, tw - (2*c->bw),
+		if (i < m->nmaster) {
+			/* nmaster clients are stacked vertically, in the center
+			 * of the screen */
+			h = (m->wh - my) / (MIN(n, m->nmaster) - i);
+			resize(c, m->wx + mx, m->wy + my, mw - (2*c->bw),
 			       h - (2*c->bw), 0);
-			ety += HEIGHT(c);
+			my += HEIGHT(c);
 		} else {
-			h = (m->wh - oty) / ((1 + n - i) / 2);
-			resize(c, m->wx + mx + mw, m->wy + oty,
-			       tw - (2*c->bw), h - (2*c->bw), 0);
-			oty += HEIGHT(c);
+			/* stack clients are stacked vertically */
+			if ((i - m->nmaster) % 2 ) {
+				h = (m->wh - ety) / ( (1 + n - i) / 2);
+				resize(c, m->wx, m->wy + ety, tw - (2*c->bw),
+				       h - (2*c->bw), 0);
+				ety += HEIGHT(c);
+			} else {
+				h = (m->wh - oty) / ((1 + n - i) / 2);
+				resize(c, m->wx + mx + mw, m->wy + oty,
+				       tw - (2*c->bw), h - (2*c->bw), 0);
+				oty += HEIGHT(c);
+			}
 		}
-	}
 }
 
-void
+	void
 centeredfloatingmaster(Monitor *m)
 {
 	unsigned int i, n, w, mh, mw, mx, mxo, my, myo, tx;
@@ -802,23 +2057,23 @@ centeredfloatingmaster(Monitor *m)
 	}
 
 	for(i = tx = 0, c = nexttiled(m->clients); c; c = nexttiled(c->next), i++)
-	if (i < m->nmaster) {
-		/* nmaster clients are stacked horizontally, in the center
-		 * of the screen */
-		w = (mw + mxo - mx) / (MIN(n, m->nmaster) - i);
-		resize(c, m->wx + mx, m->wy + my, w - (2*c->bw),
-		       mh - (2*c->bw), 0);
-		mx += WIDTH(c);
-	} else {
-		/* stack clients are stacked horizontally */
-		w = (m->ww - tx) / (n - i);
-		resize(c, m->wx + tx, m->wy, w - (2*c->bw),
-		       m->wh - (2*c->bw), 0);
-		tx += WIDTH(c);
-	}
+		if (i < m->nmaster) {
+			/* nmaster clients are stacked horizontally, in the center
+			 * of the screen */
+			w = (mw + mxo - mx) / (MIN(n, m->nmaster) - i);
+			resize(c, m->wx + mx, m->wy + my, w - (2*c->bw),
+			       mh - (2*c->bw), 0);
+			mx += WIDTH(c);
+		} else {
+			/* stack clients are stacked horizontally */
+			w = (m->ww - tx) / (n - i);
+			resize(c, m->wx + tx, m->wy, w - (2*c->bw),
+			       m->wh - (2*c->bw), 0);
+			tx += WIDTH(c);
+		}
 }
 
-void
+	void
 checkotherwm(void)
 {
 	xerrorxlib = XSetErrorHandler(xerrorstart);
@@ -829,7 +2084,7 @@ checkotherwm(void)
 	XSync(dpy, False);
 }
 
-void
+	void
 cleanup(void)
 {
 	flushimgcache();
@@ -858,7 +2113,7 @@ cleanup(void)
 	XDeleteProperty(dpy, root, netatom[NetActiveWindow]);
 }
 
-void
+	void
 cleanupmon(Monitor *mon)
 {
 	Monitor *m;
@@ -875,15 +2130,15 @@ cleanupmon(Monitor *mon)
 			XFreePixmap(dpy, mon->tagmap[i]);
 	free(mon->tagmap);
 	XUnmapWindow(dpy, mon->barwin);
-//	XUnmapWindow(dpy, mon->extrabarwin);
+	//	XUnmapWindow(dpy, mon->extrabarwin);
 	XDestroyWindow(dpy, mon->barwin);
-//	XDestroyWindow(dpy, mon->extrabarwin);
+	//	XDestroyWindow(dpy, mon->extrabarwin);
 	XUnmapWindow(dpy, mon->tagwin);
 	XDestroyWindow(dpy, mon->tagwin);
 	free(mon);
 }
 
-void
+	void
 clientmessage(XEvent *e)
 {
 	XClientMessageEvent *cme = &e->xclient;
@@ -893,16 +2148,16 @@ clientmessage(XEvent *e)
 		return;
 	if (cme->message_type == netatom[NetWMState]) {
 		if (cme->data.l[1] == netatom[NetWMFullscreen]
-		|| cme->data.l[2] == netatom[NetWMFullscreen])
+		    || cme->data.l[2] == netatom[NetWMFullscreen])
 			setfullscreen(c, (cme->data.l[0] == 1 /* _NET_WM_STATE_ADD    */
-				|| (cme->data.l[0] == 2 /* _NET_WM_STATE_TOGGLE */ && !c->isfullscreen)));
+					  || (cme->data.l[0] == 2 /* _NET_WM_STATE_TOGGLE */ && !c->isfullscreen)));
 	} else if (cme->message_type == netatom[NetActiveWindow]) {
 		if (c != selmon->sel && !c->isurgent)
 			seturgent(c, 1);
 	}
 }
 
-void
+	void
 configure(Client *c)
 {
 	XConfigureEvent ce;
@@ -921,7 +2176,7 @@ configure(Client *c)
 	XSendEvent(dpy, c->win, False, StructureNotifyMask, (XEvent *)&ce);
 }
 
-void
+	void
 configurenotify(XEvent *e)
 {
 	Monitor *m;
@@ -951,7 +2206,7 @@ configurenotify(XEvent *e)
 	}
 }
 
-void
+	void
 configurerequest(XEvent *e)
 {
 	Client *c;
@@ -984,6 +2239,10 @@ configurerequest(XEvent *e)
 				c->x = m->mx + (m->mw / 2 - WIDTH(c) / 2); /* center in x direction */
 			if ((c->y + c->h) > m->my + m->mh && c->isfloating)
 				c->y = m->my + (m->mh / 2 - HEIGHT(c) / 2); /* center in y direction */
+			if (strcmp(c->name, "Whisker Menu") == 0) {
+				c->x = c->mon->wx + sidepad;
+				c->y = c->mon->wy + c->mon->wh - HEIGHT(c) - vertpad;
+			}
 			if ((ev->value_mask & (CWX|CWY)) && !(ev->value_mask & (CWWidth|CWHeight)))
 				configure(c);
 			if (ISVISIBLE(c))
@@ -1003,7 +2262,7 @@ configurerequest(XEvent *e)
 	XSync(dpy, False);
 }
 
-Monitor *
+	Monitor *
 createmon(void)
 {
 	Monitor *m;
@@ -1048,7 +2307,7 @@ deck(Monitor *m) {
 			resize(c, m->wx + mw, m->wy, m->ww - mw - (2*c->bw), m->wh - (2*c->bw), False);
 }
 
-void
+	void
 destroynotify(XEvent *e)
 {
 	Client *c;
@@ -1058,7 +2317,7 @@ destroynotify(XEvent *e)
 		unmanage(c, 1);
 }
 
-void
+	void
 detach(Client *c)
 {
 	Client **tc;
@@ -1067,7 +2326,7 @@ detach(Client *c)
 	*tc = c->next;
 }
 
-void
+	void
 detachstack(Client *c)
 {
 	Client **tc, *t;
@@ -1081,7 +2340,7 @@ detachstack(Client *c)
 	}
 }
 
-Monitor *
+	Monitor *
 dirtomon(int dir)
 {
 	Monitor *m = NULL;
@@ -1097,128 +2356,128 @@ dirtomon(int dir)
 }
 
 
-int
+	int
 drawstatusbar(Monitor *m, int bh, char *stext)
 {
-    int   ret, i, w, x, len;
-    short isCode = 0;
-    char *text;
-    char *p;
-    char  imgpath[STATUSIMG_PATH_MAX];
+	int   ret, i, w, x, len;
+	short isCode = 0;
+	char *text;
+	char *p;
+	char  imgpath[STATUSIMG_PATH_MAX];
 
-    len = strlen(stext) + 1;
-    if (!(text = (char *)malloc(sizeof(char) * len)))
-        die("malloc");
-    p = text;
-    memcpy(text, stext, len);
+	len = strlen(stext) + 1;
+	if (!(text = (char *)malloc(sizeof(char) * len)))
+		die("malloc");
+	p = text;
+	memcpy(text, stext, len);
 
-    /* ── pass 1: measure total pixel width ─────────────────────────────── */
-    w = 0;
-    i = -1;
-    while (text[++i]) {
-        if (text[i] == '^') {
-            if (!isCode) {
-                isCode = 1;
-                text[i] = '\0';
-                w += TEXTW(text) - lrpad;
-                text[i] = '^';
-                if (text[++i] == 'f') {
-                    w += atoi(text + ++i);
-                } else if (text[i] == 'i') {
-                    int end = collectpath(text, i + 1, imgpath);
-                    w += measureimg(imgpath, bh) + 2; /* 2px right gap */
-                    i = end - 1;
-                }
-            } else {
-                isCode = 0;
-                text = text + i + 1;
-                i = -1;
-            }
-        }
-    }
-    if (!isCode)
-        w += TEXTW(text) - lrpad;
-    else
-        isCode = 0;
-    text = p;
+	/* ── pass 1: measure total pixel width ─────────────────────────────── */
+	w = 0;
+	i = -1;
+	while (text[++i]) {
+		if (text[i] == '^') {
+			if (!isCode) {
+				isCode = 1;
+				text[i] = '\0';
+				w += TEXTW(text) - lrpad;
+				text[i] = '^';
+				if (text[++i] == 'f') {
+					w += atoi(text + ++i);
+				} else if (text[i] == 'i') {
+					int end = collectpath(text, i + 1, imgpath);
+					w += measureimg(imgpath, bh) + 2; /* 2px right gap */
+					i = end - 1;
+				}
+			} else {
+				isCode = 0;
+				text = text + i + 1;
+				i = -1;
+			}
+		}
+	}
+	if (!isCode)
+		w += TEXTW(text) - lrpad;
+	else
+		isCode = 0;
+	text = p;
 
-    w += lrpad + 2; /* full font padding + 2px right edge */
-    ret = x = m->ww - w;
+	w += lrpad + 2; /* full font padding + 2px right edge */
+	ret = x = m->ww - w;
 
-    /* ── background rectangle ──────────────────────────────────────────── */
-    drw_setscheme(drw, scheme[SchemeTagsNorm]);
-    drw_rect(drw, x, 0, w, bh, 1, 1);
-    x++;
+	/* ── background rectangle ──────────────────────────────────────────── */
+	drw_setscheme(drw, scheme[SchemeTagsNorm]);
+	drw_rect(drw, x, 0, w, bh, 1, 1);
+	x++;
 
-    /* ── pass 2: render ────────────────────────────────────────────────── */
-    i = -1;
-    while (text[++i]) {
-        if (text[i] == '^' && !isCode) {
-            isCode = 1;
+	/* ── pass 2: render ────────────────────────────────────────────────── */
+	i = -1;
+	while (text[++i]) {
+		if (text[i] == '^' && !isCode) {
+			isCode = 1;
 
-            /* render accumulated plain text before this command */
-            text[i] = '\0';
-            w = TEXTW(text) - lrpad;
-            drw_text(drw, x, 0, w, bh, 0, text, 0);
-            x += w;
-            text[i] = '^';
+			/* render accumulated plain text before this command */
+			text[i] = '\0';
+			w = TEXTW(text) - lrpad;
+			drw_text(drw, x, 0, w, bh, 0, text, 0);
+			x += w;
+			text[i] = '^';
 
-            /* step onto command letter */
-            while (text[++i] != '^') {
-                if (text[i] == 'c') {
-                    char buf[8];
-                    memcpy(buf, (char*)text + i + 1, 7);
-                    buf[7] = '\0';
-                    drw_clr_create(drw, &drw->scheme[ColFg], buf);
-                    i += 7;
-                } else if (text[i] == 'b') {
-                    char buf[8];
-                    memcpy(buf, (char*)text + i + 1, 7);
-                    buf[7] = '\0';
-                    drw_clr_create(drw, &drw->scheme[ColBg], buf);
-                    i += 7;
-                } else if (text[i] == 'd') {
-                    drw->scheme[ColFg] = scheme[SchemeTagsNorm][ColFg];
-                    drw->scheme[ColBg] = scheme[SchemeTagsNorm][ColBg];
-                } else if (text[i] == 'r') {
-                    int rx = atoi(text + ++i);
-                    while (text[++i] != ',');
-                    int ry = atoi(text + ++i);
-                    while (text[++i] != ',');
-                    int rw = atoi(text + ++i);
-                    while (text[++i] != ',');
-                    int rh = atoi(text + ++i);
-                    drw_rect(drw, rx + x, ry, rw, rh, 1, 0);
-                } else if (text[i] == 'f') {
-                    x += atoi(text + ++i);
-                } else if (text[i] == 'i') {
-                    int end = collectpath(text, i + 1, imgpath);
-                    int imgw = drawimg(imgpath, x, bh);
-                    x += imgw + 2; /* image + 2px right gap only */
-                    i = end - 1;
-                }
-            }
+			/* step onto command letter */
+			while (text[++i] != '^') {
+				if (text[i] == 'c') {
+					char buf[8];
+					memcpy(buf, (char*)text + i + 1, 7);
+					buf[7] = '\0';
+					drw_clr_create(drw, &drw->scheme[ColFg], buf);
+					i += 7;
+				} else if (text[i] == 'b') {
+					char buf[8];
+					memcpy(buf, (char*)text + i + 1, 7);
+					buf[7] = '\0';
+					drw_clr_create(drw, &drw->scheme[ColBg], buf);
+					i += 7;
+				} else if (text[i] == 'd') {
+					drw->scheme[ColFg] = scheme[SchemeTagsNorm][ColFg];
+					drw->scheme[ColBg] = scheme[SchemeTagsNorm][ColBg];
+				} else if (text[i] == 'r') {
+					int rx = atoi(text + ++i);
+					while (text[++i] != ',');
+					int ry = atoi(text + ++i);
+					while (text[++i] != ',');
+					int rw = atoi(text + ++i);
+					while (text[++i] != ',');
+					int rh = atoi(text + ++i);
+					drw_rect(drw, rx + x, ry, rw, rh, 1, 0);
+				} else if (text[i] == 'f') {
+					x += atoi(text + ++i);
+				} else if (text[i] == 'i') {
+					int end = collectpath(text, i + 1, imgpath);
+					int imgw = drawimg(imgpath, x, bh);
+					x += imgw + 2; /* image + 2px right gap only */
+					i = end - 1;
+				}
+			}
 
-            /* i is now on the closing '^' */
-            text = text + i + 1;
-            i = -1;
-            isCode = 0;
-        }
-    }
+			/* i is now on the closing '^' */
+			text = text + i + 1;
+			i = -1;
+			isCode = 0;
+		}
+	}
 
-    /* render any trailing plain text — use full TEXTW so it fits */
-    if (!isCode) {
-        w = TEXTW(text) - lrpad;
-        drw_text(drw, x, 0, w + lrpad, bh, lrpad / 2, text, 0);
-    }
+	/* render any trailing plain text — use full TEXTW so it fits */
+	if (!isCode) {
+		w = TEXTW(text) - lrpad;
+		drw_text(drw, x, 0, w + lrpad, bh, lrpad / 2, text, 0);
+	}
 
-    drw_setscheme(drw, scheme[SchemeTagsNorm]);
-    free(p);
+	drw_setscheme(drw, scheme[SchemeTagsNorm]);
+	free(p);
 
-    return ret;
+	return ret;
 }
 
-void
+	void
 drawbar(Monitor *m)
 {
 	int x, w, tw = 0, n = 0, scm;
@@ -1254,6 +2513,8 @@ drawbar(Monitor *m)
 	for (c = m->clients; c; c = c->next) {
 		if (ispanel(c))
 			continue;
+		if (c->isfloating && c->noswallow)
+			continue;
 		if (ISVISIBLE(c))
 			n++;
 		occ |= c->tags;
@@ -1282,6 +2543,8 @@ drawbar(Monitor *m)
 					continue;
 				if (!ISVISIBLE(c))
 					continue;
+				if (c->isfloating && c->noswallow)
+					continue;
 				if (m->hov == c)
 					scm = SchemeHov;
 				else if (HIDDEN(c))
@@ -1303,7 +2566,7 @@ drawbar(Monitor *m)
 				drw_text(drw, x, 0, tabw - 1, bh, mid + (c->icon ? c->icw + ICONSPACING : 0), c->name, 0);
 				if (c->icon)
 					drw_pic(drw, x + mid, (bh - c->ich) / 2, c->icw, c->ich, c->icon);
-					//drw_pic(drw, x + lrpad / 2, (bh - c->ich) / 2, c->icw, c->ich, c->icon);
+				//drw_pic(drw, x + lrpad / 2, (bh - c->ich) / 2, c->icw, c->ich, c->icon);
 				XSetForeground(dpy, drw->gc, 0xFFFFFF);
 				XDrawLine(dpy, drw->drawable, drw->gc, x, 0, x, bh);
 				XDrawLine(dpy, drw->drawable, drw->gc, x + tabw - 1, 0, x + tabw - 1, bh);
@@ -1624,7 +2887,7 @@ drawbar(Monitor *m)
 //	//}
 //}
 
-void
+	void
 drawbars(void)
 {
 	Monitor *m;
@@ -1638,7 +2901,7 @@ dwindle(Monitor *mon) {
 	fibonacci(mon, 1);
 }
 
-void
+	void
 enternotify(XEvent *e)
 {
 	Client *c;
@@ -1657,7 +2920,7 @@ enternotify(XEvent *e)
 	focus(c);
 }
 
-void
+	void
 expose(XEvent *e)
 {
 	Monitor *m;
@@ -1667,128 +2930,128 @@ expose(XEvent *e)
 		drawbar(m);
 }
 
-void
+	void
 flushimgcache(void)
 {
-    int i;
-    for (i = 0; i < _imgcache_n; i++) {
-        if (_imgcache[i].img) {
-            imlib_context_set_image(_imgcache[i].img);
-            imlib_free_image();
-            _imgcache[i].img = NULL;
-        }
-        _imgcache[i].path[0] = '\0';
-    }
-    _imgcache_n = 0;
+	int i;
+	for (i = 0; i < _imgcache_n; i++) {
+		if (_imgcache[i].img) {
+			imlib_context_set_image(_imgcache[i].img);
+			imlib_free_image();
+			_imgcache[i].img = NULL;
+		}
+		_imgcache[i].path[0] = '\0';
+	}
+	_imgcache_n = 0;
 }
 
 
-static StatusImgCache *
+	static StatusImgCache *
 getimg(const char *path)
 {
-    int i;
+	int i;
 
-    /* search cache first */
-    for (i = 0; i < _imgcache_n; i++)
-        if (strncmp(_imgcache[i].path, path, STATUSIMG_PATH_MAX) == 0)
-            return &_imgcache[i];
+	/* search cache first */
+	for (i = 0; i < _imgcache_n; i++)
+		if (strncmp(_imgcache[i].path, path, STATUSIMG_PATH_MAX) == 0)
+			return &_imgcache[i];
 
-    /* cache full — evict oldest (index 0) by shifting */
-    if (_imgcache_n >= STATUSIMG_CACHE_MAX) {
-        imlib_context_set_image(_imgcache[0].img);
-        imlib_free_image();
-        memmove(&_imgcache[0], &_imgcache[1],
-                sizeof(StatusImgCache) * (STATUSIMG_CACHE_MAX - 1));
-        _imgcache_n--;
-    }
+	/* cache full — evict oldest (index 0) by shifting */
+	if (_imgcache_n >= STATUSIMG_CACHE_MAX) {
+		imlib_context_set_image(_imgcache[0].img);
+		imlib_free_image();
+		memmove(&_imgcache[0], &_imgcache[1],
+			sizeof(StatusImgCache) * (STATUSIMG_CACHE_MAX - 1));
+		_imgcache_n--;
+	}
 
-    Imlib_Image img = imlib_load_image(path);
-    if (!img)
-        return NULL;
+	Imlib_Image img = imlib_load_image(path);
+	if (!img)
+		return NULL;
 
-    imlib_context_set_image(img);
-    StatusImgCache *entry = &_imgcache[_imgcache_n++];
-    strncpy(entry->path, path, STATUSIMG_PATH_MAX - 1);
-    entry->path[STATUSIMG_PATH_MAX - 1] = '\0';
-    entry->img    = img;
-    entry->orig_w = imlib_image_get_width();
-    entry->orig_h = imlib_image_get_height();
-    return entry;
+	imlib_context_set_image(img);
+	StatusImgCache *entry = &_imgcache[_imgcache_n++];
+	strncpy(entry->path, path, STATUSIMG_PATH_MAX - 1);
+	entry->path[STATUSIMG_PATH_MAX - 1] = '\0';
+	entry->img    = img;
+	entry->orig_w = imlib_image_get_width();
+	entry->orig_h = imlib_image_get_height();
+	return entry;
 }
 
 /* ── helper: draw one image at (x, 1) scaled to bar height ───────────────── */
 /* Returns the pixel width consumed so the caller can advance x.              */
-static int
+	static int
 drawimg(const char *path, int x, int bh)
 {
-    StatusImgCache *ic = getimg(path);
-    if (!ic)
-        return 0;
-    int dh = (ic->orig_h > 0 && ic->orig_h < bh - 2) ? ic->orig_h : bh - 2;
-    if (dh < 1) dh = 1;
-    int dw = (ic->orig_h > 0)
-             ? ic->orig_w * dh / ic->orig_h
-             : dh;
-    if (dw < 1) dw = 1;
-    Pixmap pm = XCreatePixmap(dpy, drw->drawable, dw, dh,
-                              DefaultDepth(dpy, screen));
-    if (!pm)
-        return 0;
-    /* fill background with bar color so it shows through transparent areas */
-    XSetForeground(dpy, drw->gc, drw->scheme[ColBg].pixel);
-    XFillRectangle(dpy, pm, drw->gc, 0, 0, dw, dh);
-    imlib_context_set_image(ic->img);
-    imlib_context_set_display(dpy);
-    imlib_context_set_visual(DefaultVisual(dpy, screen));
-    imlib_context_set_drawable(pm);
-    /* PNG: blend=1 for real alpha transparency
-     * SVG: blend=0 because SVG loader ignores alpha, renders with black bg
-     *      XFillRectangle already filled bar color so SVG renders on top */
-    const char *ext = strrchr(path, '.');
-    int is_svg = (ext && strcasecmp(ext, ".svg") == 0);
-    imlib_context_set_blend(is_svg ? 0 : 1);
-    imlib_render_image_on_drawable_at_size(0, 0, dw, dh);
-    /* vertically center the image in the bar */
-    int dy = (bh - dh) / 2;
-    XCopyArea(dpy, pm, drw->drawable, drw->gc, 0, 0, dw, dh, x, dy);
-    XFreePixmap(dpy, pm);
-    return dw;
+	StatusImgCache *ic = getimg(path);
+	if (!ic)
+		return 0;
+	int dh = (ic->orig_h > 0 && ic->orig_h < bh - 2) ? ic->orig_h : bh - 2;
+	if (dh < 1) dh = 1;
+	int dw = (ic->orig_h > 0)
+		? ic->orig_w * dh / ic->orig_h
+		: dh;
+	if (dw < 1) dw = 1;
+	Pixmap pm = XCreatePixmap(dpy, drw->drawable, dw, dh,
+				  DefaultDepth(dpy, screen));
+	if (!pm)
+		return 0;
+	/* fill background with bar color so it shows through transparent areas */
+	XSetForeground(dpy, drw->gc, drw->scheme[ColBg].pixel);
+	XFillRectangle(dpy, pm, drw->gc, 0, 0, dw, dh);
+	imlib_context_set_image(ic->img);
+	imlib_context_set_display(dpy);
+	imlib_context_set_visual(DefaultVisual(dpy, screen));
+	imlib_context_set_drawable(pm);
+	/* PNG: blend=1 for real alpha transparency
+	 * SVG: blend=0 because SVG loader ignores alpha, renders with black bg
+	 *      XFillRectangle already filled bar color so SVG renders on top */
+	const char *ext = strrchr(path, '.');
+	int is_svg = (ext && strcasecmp(ext, ".svg") == 0);
+	imlib_context_set_blend(is_svg ? 0 : 1);
+	imlib_render_image_on_drawable_at_size(0, 0, dw, dh);
+	/* vertically center the image in the bar */
+	int dy = (bh - dh) / 2;
+	XCopyArea(dpy, pm, drw->drawable, drw->gc, 0, 0, dw, dh, x, dy);
+	XFreePixmap(dpy, pm);
+	return dw;
 }
 /* ── helper: measure image width (same formula as drawimg) ───────────────── */
-static int
+	static int
 measureimg(const char *path, int bh)
 {
-    StatusImgCache *ic = getimg(path);
-    if (!ic)
-        return 0;
+	StatusImgCache *ic = getimg(path);
+	if (!ic)
+		return 0;
 
-    int dh = (ic->orig_h > 0 && ic->orig_h < bh - 2) ? ic->orig_h : bh - 2;
-    if (dh < 1) dh = 1;
-    int dw = (ic->orig_h > 0)
-             ? ic->orig_w * dh / ic->orig_h
-             : dh;
-    return (dw < 1) ? 1 : dw;
+	int dh = (ic->orig_h > 0 && ic->orig_h < bh - 2) ? ic->orig_h : bh - 2;
+	if (dh < 1) dh = 1;
+	int dw = (ic->orig_h > 0)
+		? ic->orig_w * dh / ic->orig_h
+		: dh;
+	return (dw < 1) ? 1 : dw;
 }
 
 /* ── helper: collect path token up to the closing '^' ───────────────────── */
 /* Writes at most (STATUSIMG_PATH_MAX-1) bytes into out[], NUL-terminates.   */
 /* Returns the index of the closing '^' in text[] (so the caller can set     */
 /* i = that index; the outer loop's ++i will then skip past it).             */
-static int
+	static int
 collectpath(const char *text, int start, char *out)
 {
-    int j = 0;
-    int i = start;
+	int j = 0;
+	int i = start;
 
-    /* skip optional leading whitespace after the 'i' command letter */
-    while (text[i] == ' ' || text[i] == '\t')
-        i++;
+	/* skip optional leading whitespace after the 'i' command letter */
+	while (text[i] == ' ' || text[i] == '\t')
+		i++;
 
-    while (text[i] && text[i] != '^' && j < STATUSIMG_PATH_MAX - 1)
-        out[j++] = text[i++];
+	while (text[i] && text[i] != '^' && j < STATUSIMG_PATH_MAX - 1)
+		out[j++] = text[i++];
 
-    out[j] = '\0';
-    return i; /* points at '^' or '\0' */
+	out[j] = '\0';
+	return i; /* points at '^' or '\0' */
 }
 
 
@@ -1849,7 +3112,7 @@ fibonacci(Monitor *mon, int s) {
 	}
 }
 
-void
+	void
 focus(Client *c)
 {
 	if (!c || !ISVISIBLE(c))
@@ -1892,7 +3155,7 @@ focus(Client *c)
 }
 
 /* there are some broken focus acquiring clients needing extra handling */
-void
+	void
 focusin(XEvent *e)
 {
 	XFocusChangeEvent *ev = &e->xfocus;
@@ -1901,7 +3164,7 @@ focusin(XEvent *e)
 		setfocus(selmon->sel);
 }
 
-void
+	void
 focusmon(const Arg *arg)
 {
 	Monitor *m;
@@ -1953,7 +3216,7 @@ focusstackhid(const Arg *arg) {
 
 int focussed_panel = 0; // helper for focusstack, avoids loops when panel is the only client
 
-void
+	void
 focusstack(int inc, int hid)
 {
 
@@ -1970,13 +3233,13 @@ focusstack(int inc, int hid)
 	if (inc > 0) {
 		if (selmon->sel)
 			for (c = selmon->sel->next;
-					c && (!ISVISIBLE(c) || (!hid && HIDDEN(c)));
-					c = c->next);
+			     c && (!ISVISIBLE(c) || (!hid && HIDDEN(c)));
+			     c = c->next);
 		if (!c)
 			//for (c = selmon->clients; c && !ISVISIBLE(c); c = c->next);
 			for (c = selmon->clients;
-					c && (!ISVISIBLE(c) || (!hid && HIDDEN(c)));
-					c = c->next);
+			     c && (!ISVISIBLE(c) || (!hid && HIDDEN(c)));
+			     c = c->next);
 	} else {
 		//for (i = selmon->clients; i != selmon->sel; i = i->next)
 		//	if (ISVISIBLE(i))
@@ -2002,15 +3265,15 @@ focusstack(int inc, int hid)
 		}
 		// skipping the panel when switching focus:
 		//if (ispanel(c) && focussed_panel == 0) {
-  		//  focussed_panel = 1;
-  		//  //focusstack(c->arg->i, focussed_panel);
-  		//  //focussed_panel = 0;
-  		//}
+		//  focussed_panel = 1;
+		//  //focusstack(c->arg->i, focussed_panel);
+		//  //focussed_panel = 0;
+		//}
 	}
 }
 
 
-Atom
+	Atom
 getatomprop(Client *c, Atom prop)
 {
 	int di;
@@ -2019,7 +3282,7 @@ getatomprop(Client *c, Atom prop)
 	Atom da, atom = None;
 
 	if (XGetWindowProperty(dpy, c->win, prop, 0L, sizeof atom, False, XA_ATOM,
-		&da, &di, &dl, &dl, &p) == Success && p) {
+			       &da, &di, &dl, &dl, &p) == Success && p) {
 		atom = *(Atom *)p;
 		XFree(p);
 	}
@@ -2033,7 +3296,7 @@ static uint32_t prealpha(uint32_t p) {
 	return (rb & 0xFF00FFu) | (g & 0x00FF00u) | (a << 24u);
 }
 
-Picture
+	Picture
 geticonprop(Window win, unsigned int *picw, unsigned int *pich)
 {
 	int format;
@@ -2041,7 +3304,7 @@ geticonprop(Window win, unsigned int *picw, unsigned int *pich)
 	Atom real;
 
 	if (XGetWindowProperty(dpy, win, netatom[NetWMIcon], 0L, LONG_MAX, False, AnyPropertyType,
-						   &real, &format, &n, &extra, (unsigned char **)&p) != Success)
+			       &real, &format, &n, &extra, (unsigned char **)&p) != Success)
 		return None;
 	if (n == 0 || format != 32) { XFree(p); return None; }
 
@@ -2087,7 +3350,7 @@ geticonprop(Window win, unsigned int *picw, unsigned int *pich)
 	return ret;
 }
 
-pid_t
+	pid_t
 getstatusbarpid(void)
 {
 	char buf[32], *str = buf, *c;
@@ -2111,7 +3374,7 @@ getstatusbarpid(void)
 	return strtol(buf, NULL, 10);
 }
 
-int
+	int
 getrootptr(int *x, int *y)
 {
 	int di;
@@ -2121,7 +3384,7 @@ getrootptr(int *x, int *y)
 	return XQueryPointer(dpy, root, &dummy, &dummy, x, y, &di, &di, &dui);
 }
 
-long
+	long
 getstate(Window w)
 {
 	int format;
@@ -2131,7 +3394,7 @@ getstate(Window w)
 	Atom real;
 
 	if (XGetWindowProperty(dpy, w, wmatom[WMState], 0L, 2L, False, wmatom[WMState],
-		&real, &format, &n, &extra, (unsigned char **)&p) != Success)
+			       &real, &format, &n, &extra, (unsigned char **)&p) != Success)
 		return -1;
 	if (n != 0)
 		result = *p;
@@ -2139,7 +3402,7 @@ getstate(Window w)
 	return result;
 }
 
-int
+	int
 gettextprop(Window w, Atom atom, char *text, unsigned int size)
 {
 	char **list = NULL;
@@ -2162,9 +3425,11 @@ gettextprop(Window w, Atom atom, char *text, unsigned int size)
 	return 1;
 }
 
-void
+	void
 grabbuttons(Client *c, int focused)
 {
+	if (ispanel(c))
+		return;
 	updatenumlockmask();
 	{
 		unsigned int i, j;
@@ -2172,18 +3437,28 @@ grabbuttons(Client *c, int focused)
 		XUngrabButton(dpy, AnyButton, AnyModifier, c->win);
 		if (!focused)
 			XGrabButton(dpy, AnyButton, AnyModifier, c->win, False,
-				BUTTONMASK, GrabModeSync, GrabModeSync, None, None);
+				    BUTTONMASK, GrabModeSync, GrabModeSync, None, None);
 		for (i = 0; i < LENGTH(buttons); i++)
 			if (buttons[i].click == ClkClientWin)
-				for (j = 0; j < LENGTH(modifiers); j++)
+				for (j = 0; j < LENGTH(modifiers); j++) {
+					/* don't grab Button3 on focused terminals
+					   running nvim so nvim gets right-click natively */
+					if (focused && c->isterminal
+					    && buttons[i].button == Button3
+					    && strncmp(c->name, "nvim:", 5) == 0)
+						continue;
+					if (focused && !c->isterminal
+					    && buttons[i].button == Button3)
+						continue;
 					XGrabButton(dpy, buttons[i].button,
-						buttons[i].mask | modifiers[j],
-						c->win, False, BUTTONMASK,
-						GrabModeAsync, GrabModeSync, None, None);
+						    buttons[i].mask | modifiers[j],
+						    c->win, False, BUTTONMASK,
+						    GrabModeAsync, GrabModeSync, None, None);
+				}
 	}
 }
 
-void
+	void
 grabkeys(void)
 {
 	updatenumlockmask();
@@ -2239,7 +3514,7 @@ grid(Monitor *m) {
 	}
 }
 
-void
+	void
 hide(const Arg *arg)
 {
 	hidewin(selmon->sel);
@@ -2278,10 +3553,10 @@ ispanel(Client *c) {
 		if (!strcmp(c->name, panel[i]))
 			return 1;
 	return 0;
-    //return !strcmp(c->name, panel[0]);
+	//return !strcmp(c->name, panel[0]);
 }
 
-void
+	void
 incnmaster(const Arg *arg)
 {
 	selmon->nmaster = MAX(selmon->nmaster + arg->i, 0);
@@ -2289,18 +3564,18 @@ incnmaster(const Arg *arg)
 }
 
 #ifdef XINERAMA
-static int
+	static int
 isuniquegeom(XineramaScreenInfo *unique, size_t n, XineramaScreenInfo *info)
 {
 	while (n--)
 		if (unique[n].x_org == info->x_org && unique[n].y_org == info->y_org
-		&& unique[n].width == info->width && unique[n].height == info->height)
+		    && unique[n].width == info->width && unique[n].height == info->height)
 			return 0;
 	return 1;
 }
 #endif /* XINERAMA */
 
-void
+	void
 keypress(XEvent *e)
 {
 	unsigned int i;
@@ -2311,12 +3586,12 @@ keypress(XEvent *e)
 	keysym = XKeycodeToKeysym(dpy, (KeyCode)ev->keycode, 0);
 	for (i = 0; i < LENGTH(keys); i++)
 		if (keysym == keys[i].keysym
-		&& CLEANMASK(keys[i].mod) == CLEANMASK(ev->state)
-		&& keys[i].func)
+		    && CLEANMASK(keys[i].mod) == CLEANMASK(ev->state)
+		    && keys[i].func)
 			keys[i].func(&(keys[i].arg));
 }
 
-void
+	void
 killclient(const Arg *arg)
 {
 	//if (!selmon->sel)
@@ -2341,19 +3616,19 @@ killclient(const Arg *arg)
 
 void
 layoutmenu(const Arg *arg) {
-        FILE *p;
-        char c[3], *s;
-        int i;
-        XUngrabPointer(dpy, CurrentTime);
-        XSync(dpy, False);
-        if (!(p = popen(layoutmenu_cmd, "r")))
-                 return;
-        s = fgets(c, sizeof(c), p);
-        pclose(p);
-        if (!s || *s == '\0' || c[0] == '\0')
-                 return;
-        i = atoi(c);
-        setlayout(&((Arg) { .v = &layouts[i] }));
+	FILE *p;
+	char c[3], *s;
+	int i;
+	XUngrabPointer(dpy, CurrentTime);
+	XSync(dpy, False);
+	if (!(p = popen(layoutmenu_cmd, "r")))
+		return;
+	s = fgets(c, sizeof(c), p);
+	pclose(p);
+	if (!s || *s == '\0' || c[0] == '\0')
+		return;
+	i = atoi(c);
+	setlayout(&((Arg) { .v = &layouts[i] }));
 }
 
 //void
@@ -2374,7 +3649,7 @@ layoutmenu(const Arg *arg) {
 //	setlayout(&((Arg) { .v = &layouts[i] }));
 //}
 
-void
+	void
 manage(Window w, XWindowAttributes *wa)
 {
 	Client *c, *t = NULL, *term = NULL;
@@ -2393,6 +3668,8 @@ manage(Window w, XWindowAttributes *wa)
 
 	updateicon(c);
 	updatetitle(c);
+	if (c->name[0] == '\0')
+		strcpy(c->name, c->isterminal ? "mrst" : broken);
 	if (XGetTransientForHint(dpy, w, &trans) && (t = wintoclient(trans))) {
 		c->mon = t->mon;
 		c->tags = t->tags;
@@ -2414,11 +3691,11 @@ manage(Window w, XWindowAttributes *wa)
 	if (ispanel(c)) {
 		c->isfloating = 1;
 		c->tags = ~0;
-    		c->bw = c->oldbw = 0;
-    		c->x = c->oldx = c->mon->mx;
-    		c->y = c->oldy = c->mon->my + c->mon->mh - wa->height;
-    		c->w = c->oldw = wa->width;
-    		c->h = c->oldh = wa->height;
+		c->bw = c->oldbw = 0;
+		c->x = c->oldx = c->mon->mx;
+		c->y = c->oldy = c->mon->my + c->mon->mh - wa->height;
+		c->w = c->oldw = wa->width;
+		c->h = c->oldh = wa->height;
 		wc.y = c->mon->my + c->mon->mh - wa->height;
 		wc.x = c->mon->mx;
 		wc.stack_mode = Above;
@@ -2442,8 +3719,10 @@ manage(Window w, XWindowAttributes *wa)
 		Monitor *m;
 		Atom atom;
 		if (XGetWindowProperty(dpy, c->win, netatom[NetClientInfo], 0L, 2L, False, XA_CARDINAL,
-				&atom, &format, &n, &extra, (unsigned char **)&data) == Success && n == 2) {
-			c->tags = *data;
+				       &atom, &format, &n, &extra, (unsigned char **)&data) == Success && n == 2) {
+			//c->tags = *data;
+			if (c->tags != (unsigned int)TAGMASK)  /* don't override all-tags windows */
+				c->tags = *data;
 			for (m = mons; m; m = m->next) {
 				if (m->num == *(data+1)) {
 					c->mon = m;
@@ -2464,7 +3743,10 @@ manage(Window w, XWindowAttributes *wa)
 	attach(c);
 	attachstack(c);
 	XChangeProperty(dpy, root, netatom[NetClientList], XA_WINDOW, 32, PropModeAppend,
-		(unsigned char *) &(c->win), 1);
+			(unsigned char *) &(c->win), 1);
+	XChangeProperty(dpy, c->win, netatom[NetWMWindowType],
+		XA_ATOM, 32, PropModeReplace,
+		(unsigned char *)&netatom[NetWMWindowTypeNormal], 1);
 	XMoveResizeWindow(dpy, c->win, c->x + 2 * sw, c->y, c->w, c->h); /* some windows require this */
 	//setclientstate(c, NormalState);
 	if (!HIDDEN(c))
@@ -2483,7 +3765,7 @@ manage(Window w, XWindowAttributes *wa)
 	focus(NULL);
 }
 
-void
+	void
 mappingnotify(XEvent *e)
 {
 	XMappingEvent *ev = &e->xmapping;
@@ -2493,7 +3775,7 @@ mappingnotify(XEvent *e)
 		grabkeys();
 }
 
-void
+	void
 maprequest(XEvent *e)
 {
 	static XWindowAttributes wa;
@@ -2505,7 +3787,7 @@ maprequest(XEvent *e)
 		manage(ev->window, &wa);
 }
 
-void
+	void
 monocle(Monitor *m)
 {
 	unsigned int n = 0;
@@ -2520,7 +3802,7 @@ monocle(Monitor *m)
 		resize(c, m->wx, m->wy, m->ww - 2 * c->bw, m->wh - 2 * c->bw, 0);
 }
 
-void
+	void
 motionnotify(XEvent *e)
 {
 	int x, i;
@@ -2538,7 +3820,7 @@ motionnotify(XEvent *e)
 		 *       the preview window get's in the preview shot */
 		if (i < LENGTH(tags)) {
 			if (selmon->previewshow != (i + 1)
-			&& !(selmon->tagset[selmon->seltags] & 1 << i)) {
+			    && !(selmon->tagset[selmon->seltags] & 1 << i)) {
 				selmon->previewshow = i + 1;
 				showtagpreview(i);
 			} else if (selmon->tagset[selmon->seltags] & 1 << i) {
@@ -2590,8 +3872,8 @@ motionnotify(XEvent *e)
 
 	/* mouse is over tags, layout symbol, or status area — clear hover */
 	if (i < LENGTH(tags)
-	|| ev->x < x + TEXTW(selmon->ltsymbol)
-	|| ev->x > selmon->ww - statusw) {
+	    || ev->x < x + TEXTW(selmon->ltsymbol)
+	    || ev->x > selmon->ww - statusw) {
 		if (selmon->hov) {
 			if (selmon->hov != selmon->sel)
 				XSetWindowBorder(dpy, selmon->hov->win, scheme[SchemeNorm][ColBorder].pixel);
@@ -2646,7 +3928,7 @@ motionnotify(XEvent *e)
 	}
 	drawbar(m);
 }
-void
+	void
 movemouse(const Arg *arg)
 {
 	int x, y, ocx, ocy, nx, ny;
@@ -2663,39 +3945,39 @@ movemouse(const Arg *arg)
 	ocx = c->x;
 	ocy = c->y;
 	if (XGrabPointer(dpy, root, False, MOUSEMASK, GrabModeAsync, GrabModeAsync,
-		None, cursor[CurMove]->cursor, CurrentTime) != GrabSuccess)
+			 None, cursor[CurMove]->cursor, CurrentTime) != GrabSuccess)
 		return;
 	if (!getrootptr(&x, &y))
 		return;
 	do {
 		XMaskEvent(dpy, MOUSEMASK|ExposureMask|SubstructureRedirectMask, &ev);
 		switch(ev.type) {
-		case ConfigureRequest:
-		case Expose:
-		case MapRequest:
-			handler[ev.type](&ev);
-			break;
-		case MotionNotify:
-			if ((ev.xmotion.time - lasttime) <= (1000 / 60))
-				continue;
-			lasttime = ev.xmotion.time;
+			case ConfigureRequest:
+			case Expose:
+			case MapRequest:
+				handler[ev.type](&ev);
+				break;
+			case MotionNotify:
+				if ((ev.xmotion.time - lasttime) <= (1000 / 60))
+					continue;
+				lasttime = ev.xmotion.time;
 
-			nx = ocx + (ev.xmotion.x - x);
-			ny = ocy + (ev.xmotion.y - y);
-			if (abs(selmon->wx - nx) < snap)
-				nx = selmon->wx;
-			else if (abs((selmon->wx + selmon->ww) - (nx + WIDTH(c))) < snap)
-				nx = selmon->wx + selmon->ww - WIDTH(c);
-			if (abs(selmon->wy - ny) < snap)
-				ny = selmon->wy;
-			else if (abs((selmon->wy + selmon->wh) - (ny + HEIGHT(c))) < snap)
-				ny = selmon->wy + selmon->wh - HEIGHT(c);
-			if (!c->isfloating && selmon->lt[selmon->sellt]->arrange
-			&& (abs(nx - c->x) > snap || abs(ny - c->y) > snap))
-				togglefloating(NULL);
-			if (!selmon->lt[selmon->sellt]->arrange || c->isfloating)
-				resize(c, nx, ny, c->w, c->h, 1);
-			break;
+				nx = ocx + (ev.xmotion.x - x);
+				ny = ocy + (ev.xmotion.y - y);
+				if (abs(selmon->wx - nx) < snap)
+					nx = selmon->wx;
+				else if (abs((selmon->wx + selmon->ww) - (nx + WIDTH(c))) < snap)
+					nx = selmon->wx + selmon->ww - WIDTH(c);
+				if (abs(selmon->wy - ny) < snap)
+					ny = selmon->wy;
+				else if (abs((selmon->wy + selmon->wh) - (ny + HEIGHT(c))) < snap)
+					ny = selmon->wy + selmon->wh - HEIGHT(c);
+				if (!c->isfloating && selmon->lt[selmon->sellt]->arrange
+				    && (abs(nx - c->x) > snap || abs(ny - c->y) > snap))
+					togglefloating(NULL);
+				if (!selmon->lt[selmon->sellt]->arrange || c->isfloating)
+					resize(c, nx, ny, c->w, c->h, 1);
+				break;
 		}
 	} while (ev.type != ButtonRelease);
 	XUngrabPointer(dpy, CurrentTime);
@@ -2706,7 +3988,7 @@ movemouse(const Arg *arg)
 	}
 }
 
-Client *
+	Client *
 nexttiled(Client *c)
 {
 	//for (; c && (c->isfloating || !ISVISIBLE(c)); c = c->next);
@@ -2714,7 +3996,7 @@ nexttiled(Client *c)
 	return c;
 }
 
-void
+	void
 pop(Client *c)
 {
 	detach(c);
@@ -2723,7 +4005,7 @@ pop(Client *c)
 	arrange(c->mon);
 }
 
-void
+	void
 propertynotify(XEvent *e)
 {
 	Client *c;
@@ -2736,19 +4018,19 @@ propertynotify(XEvent *e)
 		return; /* ignore */
 	else if ((c = wintoclient(ev->window))) {
 		switch(ev->atom) {
-		default: break;
-		case XA_WM_TRANSIENT_FOR:
-			if (!c->isfloating && (XGetTransientForHint(dpy, c->win, &trans)) &&
-				(c->isfloating = (wintoclient(trans)) != NULL))
-				arrange(c->mon);
-			break;
-		case XA_WM_NORMAL_HINTS:
-			c->hintsvalid = 0;
-			break;
-		case XA_WM_HINTS:
-			updatewmhints(c);
-			drawbars();
-			break;
+			default: break;
+			case XA_WM_TRANSIENT_FOR:
+				 if (!c->isfloating && (XGetTransientForHint(dpy, c->win, &trans)) &&
+				     (c->isfloating = (wintoclient(trans)) != NULL))
+					 arrange(c->mon);
+				 break;
+			case XA_WM_NORMAL_HINTS:
+				 c->hintsvalid = 0;
+				 break;
+			case XA_WM_HINTS:
+				 updatewmhints(c);
+				 drawbars();
+				 break;
 		}
 		if (ev->atom == XA_WM_NAME || ev->atom == netatom[NetWMName]) {
 			updatetitle(c);
@@ -2764,7 +4046,7 @@ propertynotify(XEvent *e)
 	}
 }
 
-void
+	void
 quit(const Arg *arg)
 {
 	// fix: reloading dwm keeps all the hidden clients hidden
@@ -2781,7 +4063,7 @@ quit(const Arg *arg)
 	running = 0;
 }
 
-Monitor *
+	Monitor *
 recttomon(int x, int y, int w, int h)
 {
 	Monitor *m, *r = selmon;
@@ -2795,14 +4077,14 @@ recttomon(int x, int y, int w, int h)
 	return r;
 }
 
-void
+	void
 resize(Client *c, int x, int y, int w, int h, int interact)
 {
 	if (ispanel(c) || applysizehints(c, &x, &y, &w, &h, interact))
 		resizeclient(c, x, y, w, h);
 }
 
-void
+	void
 resizeclient(Client *c, int x, int y, int w, int h)
 {
 	XWindowChanges wc;
@@ -2819,7 +4101,7 @@ resizeclient(Client *c, int x, int y, int w, int h)
 	XSync(dpy, False);
 }
 
-void
+	void
 resizemouse(const Arg *arg)
 {
 	int ocx, ocy, nw, nh;
@@ -2836,34 +4118,34 @@ resizemouse(const Arg *arg)
 	ocx = c->x;
 	ocy = c->y;
 	if (XGrabPointer(dpy, root, False, MOUSEMASK, GrabModeAsync, GrabModeAsync,
-		None, cursor[CurResize]->cursor, CurrentTime) != GrabSuccess)
+			 None, cursor[CurResize]->cursor, CurrentTime) != GrabSuccess)
 		return;
 	XWarpPointer(dpy, None, c->win, 0, 0, 0, 0, c->w + c->bw - 1, c->h + c->bw - 1);
 	do {
 		XMaskEvent(dpy, MOUSEMASK|ExposureMask|SubstructureRedirectMask, &ev);
 		switch(ev.type) {
-		case ConfigureRequest:
-		case Expose:
-		case MapRequest:
-			handler[ev.type](&ev);
-			break;
-		case MotionNotify:
-			if ((ev.xmotion.time - lasttime) <= (1000 / 60))
-				continue;
-			lasttime = ev.xmotion.time;
+			case ConfigureRequest:
+			case Expose:
+			case MapRequest:
+				handler[ev.type](&ev);
+				break;
+			case MotionNotify:
+				if ((ev.xmotion.time - lasttime) <= (1000 / 60))
+					continue;
+				lasttime = ev.xmotion.time;
 
-			nw = MAX(ev.xmotion.x - ocx - 2 * c->bw + 1, 1);
-			nh = MAX(ev.xmotion.y - ocy - 2 * c->bw + 1, 1);
-			if (c->mon->wx + nw >= selmon->wx && c->mon->wx + nw <= selmon->wx + selmon->ww
-			&& c->mon->wy + nh >= selmon->wy && c->mon->wy + nh <= selmon->wy + selmon->wh)
-			{
-				if (!c->isfloating && selmon->lt[selmon->sellt]->arrange
-				&& (abs(nw - c->w) > snap || abs(nh - c->h) > snap))
-					togglefloating(NULL);
-			}
-			if (!selmon->lt[selmon->sellt]->arrange || c->isfloating)
-				resize(c, c->x, c->y, nw, nh, 1);
-			break;
+				nw = MAX(ev.xmotion.x - ocx - 2 * c->bw + 1, 1);
+				nh = MAX(ev.xmotion.y - ocy - 2 * c->bw + 1, 1);
+				if (c->mon->wx + nw >= selmon->wx && c->mon->wx + nw <= selmon->wx + selmon->ww
+				    && c->mon->wy + nh >= selmon->wy && c->mon->wy + nh <= selmon->wy + selmon->wh)
+				{
+					if (!c->isfloating && selmon->lt[selmon->sellt]->arrange
+					    && (abs(nw - c->w) > snap || abs(nh - c->h) > snap))
+						togglefloating(NULL);
+				}
+				if (!selmon->lt[selmon->sellt]->arrange || c->isfloating)
+					resize(c, c->x, c->y, nw, nh, 1);
+				break;
 		}
 	} while (ev.type != ButtonRelease);
 	XWarpPointer(dpy, None, c->win, 0, 0, 0, 0, c->w + c->bw - 1, c->h + c->bw - 1);
@@ -2876,7 +4158,7 @@ resizemouse(const Arg *arg)
 	}
 }
 
-void
+	void
 restack(Monitor *m)
 {
 	Client *c;
@@ -2901,31 +4183,67 @@ restack(Monitor *m)
 	while (XCheckMaskEvent(dpy, EnterWindowMask, &ev));
 }
 
+//	void
+//run(void)
+//{
+//	XEvent ev;
+//	XSync(dpy, False);
+//	while (running && !XNextEvent(dpy, &ev)) {
+//		if (run_preview) {
+//			run_preview = 0;
+//			if (!preview_running) {
+//				preview_running = 1;
+//				previewallwin(NULL);
+//				preview_running = 0;
+//			}
+//		}
+//		if (run_recompile) {
+//			run_recompile = 0;
+//			Arg a = {.i = 1};
+//			quit(&a);
+//		}
+//		if (handler[ev.type])
+//			handler[ev.type](&ev);
+//	}
+//}
+
 void
 run(void)
 {
-	XEvent ev;
-	XSync(dpy, False);
-	while (running && !XNextEvent(dpy, &ev)) {
-		if (run_preview) {
-			run_preview = 0;
-			if (!preview_running) {
-				preview_running = 1;
-				previewallwin(NULL);
-				preview_running = 0;
-			}
-		}
-		if (run_recompile) {
-			run_recompile = 0;
-			Arg a = {.i = 1};
-			quit(&a);
-		}
-		if (handler[ev.type])
-			handler[ev.type](&ev);
-	}
+    XEvent ev;
+    int xfd = ConnectionNumber(dpy);
+    fd_set fds;
+
+    XSync(dpy, False);
+    while (running) {
+        if (run_preview) {
+            run_preview = 0;
+            if (!preview_running) {
+                preview_running = 1;
+                previewallwin(NULL);
+                preview_running = 0;
+            }
+        }
+        if (run_recompile) {
+            run_recompile = 0;
+            Arg a = {.i = 1};
+            quit(&a);
+        }
+
+        while (XPending(dpy)) {
+            XNextEvent(dpy, &ev);
+            if (handler[ev.type])
+                handler[ev.type](&ev);
+        }
+
+        FD_ZERO(&fds);
+        FD_SET(xfd, &fds);
+        if (select(xfd + 1, &fds, NULL, NULL, NULL) == -1 && errno == EINTR)
+            continue;
+    }
 }
 
-void
+	void
 runautostart(void)
 {
 	char path[512];
@@ -3024,7 +4342,7 @@ runautostart(void)
 //	free(path);
 //}
 
-void
+	void
 scan(void)
 {
 	unsigned int i, num;
@@ -3034,7 +4352,7 @@ scan(void)
 	if (XQueryTree(dpy, root, &d1, &d2, &wins, &num)) {
 		for (i = 0; i < num; i++) {
 			if (!XGetWindowAttributes(dpy, wins[i], &wa)
-			|| wa.override_redirect || XGetTransientForHint(dpy, wins[i], &d1))
+			    || wa.override_redirect || XGetTransientForHint(dpy, wins[i], &d1))
 				continue;
 			if (wa.map_state == IsViewable || getstate(wins[i]) == IconicState)
 				manage(wins[i], &wa);
@@ -3043,7 +4361,7 @@ scan(void)
 			if (!XGetWindowAttributes(dpy, wins[i], &wa))
 				continue;
 			if (XGetTransientForHint(dpy, wins[i], &d1)
-			&& (wa.map_state == IsViewable || getstate(wins[i]) == IconicState))
+			    && (wa.map_state == IsViewable || getstate(wins[i]) == IconicState))
 				manage(wins[i], &wa);
 		}
 		if (wins)
@@ -3051,7 +4369,7 @@ scan(void)
 	}
 }
 
-void
+	void
 sendmon(Client *c, Monitor *m)
 {
 	if (c->mon == m)
@@ -3068,16 +4386,16 @@ sendmon(Client *c, Monitor *m)
 	arrange(NULL);
 }
 
-void
+	void
 setclientstate(Client *c, long state)
 {
 	long data[] = { state, None };
 
 	XChangeProperty(dpy, c->win, wmatom[WMState], wmatom[WMState], 32,
-		PropModeReplace, (unsigned char *)data, 2);
+			PropModeReplace, (unsigned char *)data, 2);
 }
 
-int
+	int
 sendevent(Client *c, Atom proto)
 {
 	int n;
@@ -3102,24 +4420,24 @@ sendevent(Client *c, Atom proto)
 	return exists;
 }
 
-void
+	void
 setfocus(Client *c)
 {
 	if (!c->neverfocus) {
 		XSetInputFocus(dpy, c->win, RevertToPointerRoot, CurrentTime);
 		XChangeProperty(dpy, root, netatom[NetActiveWindow],
-			XA_WINDOW, 32, PropModeReplace,
-			(unsigned char *) &(c->win), 1);
+				XA_WINDOW, 32, PropModeReplace,
+				(unsigned char *) &(c->win), 1);
 	}
 	sendevent(c, wmatom[WMTakeFocus]);
 }
 
-void
+	void
 setfullscreen(Client *c, int fullscreen)
 {
 	if (fullscreen && !c->isfullscreen) {
 		XChangeProperty(dpy, c->win, netatom[NetWMState], XA_ATOM, 32,
-			PropModeReplace, (unsigned char*)&netatom[NetWMFullscreen], 1);
+				PropModeReplace, (unsigned char*)&netatom[NetWMFullscreen], 1);
 		c->isfullscreen = 1;
 		c->oldstate = c->isfloating;
 		c->oldbw = c->bw;
@@ -3129,7 +4447,7 @@ setfullscreen(Client *c, int fullscreen)
 		XRaiseWindow(dpy, c->win);
 	} else if (!fullscreen && c->isfullscreen){
 		XChangeProperty(dpy, c->win, netatom[NetWMState], XA_ATOM, 32,
-			PropModeReplace, (unsigned char*)0, 0);
+				PropModeReplace, (unsigned char*)0, 0);
 		c->isfullscreen = 0;
 		c->isfloating = c->oldstate;
 		c->bw = c->oldbw;
@@ -3142,7 +4460,7 @@ setfullscreen(Client *c, int fullscreen)
 	}
 }
 
-void
+	void
 setgaps(const Arg *arg)
 {
 	if ((arg->i == 0) || (selmon->gappx + arg->i < 0))
@@ -3152,7 +4470,7 @@ setgaps(const Arg *arg)
 	arrange(selmon);
 }
 
-void
+	void
 setlayout(const Arg *arg)
 {
 	if (!arg || !arg->v || arg->v != selmon->lt[selmon->sellt])
@@ -3167,7 +4485,7 @@ setlayout(const Arg *arg)
 }
 
 /* arg > 1.0 will set mfact absolutely */
-void
+	void
 setmfact(const Arg *arg)
 {
 	float f;
@@ -3181,7 +4499,7 @@ setmfact(const Arg *arg)
 	arrange(selmon);
 }
 
-void
+	void
 showtagpreview(unsigned int i)
 {
 	if (!selmon->previewshow || !selmon->tagmap[i]) {
@@ -3191,14 +4509,14 @@ showtagpreview(unsigned int i)
 
 	XSetWindowBackgroundPixmap(dpy, selmon->tagwin, selmon->tagmap[i]);
 	XCopyArea(dpy, selmon->tagmap[i], selmon->tagwin, drw->gc, 0, 0,
-			selmon->mw / scalepreview, selmon->mh / scalepreview,
-			0, 0);
+		  selmon->mw / scalepreview, selmon->mh / scalepreview,
+		  0, 0);
 	XSync(dpy, False);
 	XMoveWindow(dpy, selmon->tagwin, selmon->wx, selmon->wy);
 	XMapRaised(dpy, selmon->tagwin);
 }
 
-void
+	void
 takepreview(void)
 {
 	Client *c;
@@ -3302,7 +4620,7 @@ takepreview(void)
 //	}
 //}
 
-void
+	void
 previewtag(const Arg *arg)
 {
 	if (selmon->previewshow != (arg->ui + 1))
@@ -3313,18 +4631,26 @@ previewtag(const Arg *arg)
 }
 
 
+//	static void
+//sigusr1(int unused)
+//{
+//	sigusr1_count++;
+//	if (!preview_running && (sigusr1_count % 2 == 1))
+//		run_preview = 1;
+//}
+
 static void
 sigusr1(int unused)
 {
-    sigusr1_count++;
-    if (!preview_running && (sigusr1_count % 2 == 1))
+    (void)unused;
+    if (!run_preview)
         run_preview = 1;
 }
 
-static void
+	static void
 sigusr2(int unused)
 {
-    run_recompile = 1;
+	run_recompile = 1;
 }
 
 void
@@ -3335,30 +4661,32 @@ setup(void)
 	Atom utf8string;
 	struct sigaction sa;
 
-	/* do not transform children into zombies when they terminate */
 	sigemptyset(&sa.sa_mask);
 	sa.sa_flags = SA_NOCLDSTOP | SA_NOCLDWAIT | SA_RESTART;
 	sa.sa_handler = SIG_IGN;
 	sigaction(SIGCHLD, &sa, NULL);
 
-	/* clean up any zombies (inherited from .xinitrc etc) immediately */
 	signal(SIGHUP, sighup);
 	signal(SIGTERM, sigterm);
-	signal(SIGUSR1, sigusr1);
+	//signal(SIGUSR1, sigusr1);
+	struct sigaction sa_usr1;
+sigemptyset(&sa_usr1.sa_mask);
+sa_usr1.sa_flags = 0; /* no SA_RESTART */
+sa_usr1.sa_handler = sigusr1;
+sigaction(SIGUSR1, &sa_usr1, NULL);
 	signal(SIGUSR2, sigusr2);
 
 	while (waitpid(-1, NULL, WNOHANG) > 0);
 
-	/* init screen */
 	screen = DefaultScreen(dpy);
 	sw = DisplayWidth(dpy, screen);
 	sh = DisplayHeight(dpy, screen);
 	root = RootWindow(dpy, screen);
 	drw = drw_create(dpy, screen, root, sw, sh);
+	scrfmt = XRenderFindVisualFormat(dpy, DefaultVisual(dpy, screen));
 	if (!drw_fontset_create(drw, fonts, LENGTH(fonts)))
 		die("no fonts could be loaded.");
 	lrpad = drw->fonts->h;
-	//bh = drw->fonts->h + 2;
 	bh = user_bh ? user_bh : drw->fonts->h + 2;
 	dh = user_dh ? user_dh : drw->fonts->h + 2;
 	updategeom();
@@ -3379,8 +4707,13 @@ setup(void)
 	netatom[NetWMFullscreen] = XInternAtom(dpy, "_NET_WM_STATE_FULLSCREEN", False);
 	netatom[NetWMWindowType] = XInternAtom(dpy, "_NET_WM_WINDOW_TYPE", False);
 	netatom[NetWMWindowTypeDialog] = XInternAtom(dpy, "_NET_WM_WINDOW_TYPE_DIALOG", False);
+	netatom[NetWMWindowTypeNormal] = XInternAtom(dpy, "_NET_WM_WINDOW_TYPE_NORMAL", False);
 	netatom[NetClientList] = XInternAtom(dpy, "_NET_CLIENT_LIST", False);
 	netatom[NetClientInfo] = XInternAtom(dpy, "_NET_CLIENT_INFO", False);
+	netatom[NetDesktopNames] = XInternAtom(dpy, "_NET_DESKTOP_NAMES", False);
+	netatom[NetDesktopViewport] = XInternAtom(dpy, "_NET_DESKTOP_VIEWPORT", False);
+	netatom[NetNumberOfDesktops] = XInternAtom(dpy, "_NET_NUMBER_OF_DESKTOPS", False);
+	netatom[NetCurrentDesktop] = XInternAtom(dpy, "_NET_CURRENT_DESKTOP", False);
 	/* init cursors */
 	cursor[CurNormal] = drw_cur_create(drw, XC_left_ptr);
 	cursor[CurResize] = drw_cur_create(drw, XC_sizing);
@@ -3397,14 +4730,18 @@ setup(void)
 	/* supporting window for NetWMCheck */
 	wmcheckwin = XCreateSimpleWindow(dpy, root, 0, 0, 1, 1, 0, 0, 0);
 	XChangeProperty(dpy, wmcheckwin, netatom[NetWMCheck], XA_WINDOW, 32,
-		PropModeReplace, (unsigned char *) &wmcheckwin, 1);
+			PropModeReplace, (unsigned char *) &wmcheckwin, 1);
 	XChangeProperty(dpy, wmcheckwin, netatom[NetWMName], utf8string, 8,
-		PropModeReplace, (unsigned char *) "mrdwm", 5);
+			PropModeReplace, (unsigned char *) "mrdwm", 5);
 	XChangeProperty(dpy, root, netatom[NetWMCheck], XA_WINDOW, 32,
-		PropModeReplace, (unsigned char *) &wmcheckwin, 1);
+			PropModeReplace, (unsigned char *) &wmcheckwin, 1);
 	/* EWMH support per view */
 	XChangeProperty(dpy, root, netatom[NetSupported], XA_ATOM, 32,
-		PropModeReplace, (unsigned char *) netatom, NetLast);
+			PropModeReplace, (unsigned char *) netatom, NetLast);
+	setnumdesktops();
+	setcurrentdesktop();
+	setdesktopnames();
+	setviewport();
 	XDeleteProperty(dpy, root, netatom[NetClientList]);
 	XDeleteProperty(dpy, root, netatom[NetClientInfo]);
 	/* select events */
@@ -3418,7 +4755,7 @@ setup(void)
 	focus(NULL);
 }
 
-void
+	void
 seturgent(Client *c, int urg)
 {
 	XWMHints *wmh;
@@ -3431,7 +4768,7 @@ seturgent(Client *c, int urg)
 	XFree(wmh);
 }
 
-void
+	void
 show(const Arg *arg)
 {
 	if (selmon->hidsel)
@@ -3439,7 +4776,7 @@ show(const Arg *arg)
 	showwin(selmon->sel);
 }
 
-void
+	void
 showall(const Arg *arg)
 {
 	Client *c = NULL;
@@ -3456,7 +4793,7 @@ showall(const Arg *arg)
 	restack(selmon);
 }
 
-void
+	void
 showwin(Client *c)
 {
 	if (!c || !HIDDEN(c))
@@ -3467,7 +4804,7 @@ showwin(Client *c)
 	arrange(c->mon);
 }
 
-void
+	void
 showhide(Client *c)
 {
 	if (!c)
@@ -3485,21 +4822,21 @@ showhide(Client *c)
 	}
 }
 
-void
+	void
 sighup(int unused)
 {
 	Arg a = {.i = 1};
 	quit(&a);
 }
 
-void
+	void
 sigterm(int unused)
 {
 	Arg a = {.i = 0};
 	quit(&a);
 }
 
-void
+	void
 sigstatusbar(const Arg *arg)
 {
 	union sigval sv;
@@ -3513,7 +4850,7 @@ sigstatusbar(const Arg *arg)
 	sigqueue(statuspid, SIGRTMIN+statussig, sv);
 }
 
-void
+	void
 spawn(const Arg *arg)
 {
 	struct sigaction sa;
@@ -3535,12 +4872,47 @@ spawn(const Arg *arg)
 	}
 }
 
+//void
+//spawnifdesk(const Arg *arg)
+//{
+//    int x, y;
+//    getrootptr(&x, &y);
+//    Client *c;
+//    Monitor *m;
+//    for (m = mons; m; m = m->next)
+//        for (c = m->clients; c; c = c->next)
+//            if (ispanel(c) &&
+//                x >= c->x && x < c->x + c->w &&
+//                y >= c->y && y < c->y + c->h)
+//                return;
+//    spawn(arg);
+//}
+
+	void
+spawnifdesk(const Arg *arg)
+{
+	if (selmon->sel && !ispanel(selmon->sel))
+		return;
+	spawn(arg);
+}
+
+	void
+spawnifterm(const Arg *arg)
+{
+	if (!selmon->sel || !selmon->sel->isterminal)
+		return;
+	if (strncmp(selmon->sel->name, "nvim:", 5) == 0)
+		return;
+	if (strncmp(selmon->sel->name, "mrst", 4) == 0)
+		spawn(arg);
+}
+
 void
 spiral(Monitor *mon) {
 	fibonacci(mon, 0);
 }
 
-void
+	void
 setclienttagprop(Client *c)
 {
 	long data[] = { (long) c->tags, (long) c->mon->num };
@@ -3548,7 +4920,7 @@ setclienttagprop(Client *c)
 			PropModeReplace, (unsigned char *) data, 2);
 }
 
-void
+	void
 tag(const Arg *arg)
 {
 	Client *c;
@@ -3561,7 +4933,7 @@ tag(const Arg *arg)
 	}
 }
 
-void
+	void
 tagmon(const Arg *arg)
 {
 	if (!selmon->sel || !mons->next)
@@ -3569,7 +4941,7 @@ tagmon(const Arg *arg)
 	sendmon(selmon->sel, dirtomon(arg->i));
 }
 
-void
+	void
 tcl(Monitor * m)
 {
 	int x, y, h, w, mw, sw, bdw;
@@ -3577,7 +4949,7 @@ tcl(Monitor * m)
 	Client * c;
 
 	for (n = 0, c = nexttiled(m->clients); c;
-	        c = nexttiled(c->next), n++);
+	     c = nexttiled(c->next), n++);
 
 	if (n == 0)
 		return;
@@ -3644,7 +5016,7 @@ tcl(Monitor * m)
 	}
 }
 
-void
+	void
 tile(Monitor *m)
 {
 	unsigned int i, n, h, mw, my, ty;
@@ -3708,7 +5080,7 @@ tile(Monitor *m)
 //		}
 //}
 
-void
+	void
 togglebar(const Arg *arg)
 {
 	selmon->showbar = !selmon->showbar;
@@ -3727,7 +5099,7 @@ togglebar(const Arg *arg)
 //	arrange(selmon);
 //}
 
-void
+	void
 togglefloating(const Arg *arg)
 {
 	if (!selmon->sel)
@@ -3737,11 +5109,11 @@ togglefloating(const Arg *arg)
 	selmon->sel->isfloating = !selmon->sel->isfloating || selmon->sel->isfixed;
 	if (selmon->sel->isfloating)
 		resize(selmon->sel, selmon->sel->x, selmon->sel->y,
-			selmon->sel->w, selmon->sel->h, 0);
+		       selmon->sel->w, selmon->sel->h, 0);
 	arrange(selmon);
 }
 
-void
+	void
 toggletag(const Arg *arg)
 {
 	unsigned int newtags;
@@ -3755,9 +5127,10 @@ toggletag(const Arg *arg)
 		focus(NULL);
 		arrange(selmon);
 	}
+	updatecurrentdesktop();
 }
 
-void
+	void
 toggleview(const Arg *arg)
 {
 	unsigned int newtagset = selmon->tagset[selmon->seltags] ^ (arg->ui & TAGMASK);
@@ -3768,9 +5141,10 @@ toggleview(const Arg *arg)
 		focus(NULL);
 		arrange(selmon);
 	}
+	updatecurrentdesktop();
 }
 
-void
+	void
 togglewin(const Arg *arg)
 {
 	Client *c = (Client*)arg->v;
@@ -3810,7 +5184,7 @@ togglewin(const Arg *arg)
 //	}
 //}
 
-void
+	void
 freeicon(Client *c)
 {
 	if (c->icon) {
@@ -3819,7 +5193,7 @@ freeicon(Client *c)
 	}
 }
 
-void
+	void
 unfocus(Client *c, int setfocus)
 {
 	if (!c)
@@ -3832,7 +5206,7 @@ unfocus(Client *c, int setfocus)
 	}
 }
 
-void
+	void
 unmanage(Client *c, int destroyed)
 {
 	Monitor *m = c->mon;
@@ -3872,20 +5246,20 @@ unmanage(Client *c, int destroyed)
 	//updateclientlist();
 	//arrange(m);
 	{
-                unsigned int occ = 0, i;
-                Client *cl;
-                for (cl = selmon->clients; cl; cl = cl->next) {
-                        if (ispanel(cl))
-                                continue;
-                        occ |= cl->tags;
-                }
-                for (i = 0; i < LENGTH(tags); i++) {
-                        if (!(occ & 1 << i) && selmon->tagmap[i]) {
-                                XFreePixmap(dpy, selmon->tagmap[i]);
-                                selmon->tagmap[i] = 0;
-                        }
-                }
-        }
+		unsigned int occ = 0, i;
+		Client *cl;
+		for (cl = selmon->clients; cl; cl = cl->next) {
+			if (ispanel(cl))
+				continue;
+			occ |= cl->tags;
+		}
+		for (i = 0; i < LENGTH(tags); i++) {
+			if (!(occ & 1 << i) && selmon->tagmap[i]) {
+				XFreePixmap(dpy, selmon->tagmap[i]);
+				selmon->tagmap[i] = 0;
+			}
+		}
+	}
 	if (!s) {
 		arrange(m);
 		focus(NULL);
@@ -3893,14 +5267,14 @@ unmanage(Client *c, int destroyed)
 	}
 }
 
-void
+	void
 updateicon(Client *c)
 {
 	freeicon(c);
 	c->icon = geticonprop(c->win, &c->icw, &c->ich);
 }
 
-void
+	void
 unmapnotify(XEvent *e)
 {
 	Client *c;
@@ -3914,7 +5288,7 @@ unmapnotify(XEvent *e)
 	}
 }
 
-void
+	void
 updatebars(void)
 {
 	Monitor *m;
@@ -3929,8 +5303,8 @@ updatebars(void)
 	for (m = mons; m; m = m->next) {
 		if (!m->tagwin) {
 			m->tagwin = XCreateWindow(dpy, root, m->wx, m->wy, m->mw / scalepreview,
-			m->mh / scalepreview, 0, DefaultDepth(dpy, screen), CopyFromParent,
-			DefaultVisual(dpy, screen), CWOverrideRedirect|CWBackPixmap|CWEventMask, &wa);
+						  m->mh / scalepreview, 0, DefaultDepth(dpy, screen), CopyFromParent,
+						  DefaultVisual(dpy, screen), CWOverrideRedirect|CWBackPixmap|CWEventMask, &wa);
 			XDefineCursor(dpy, m->tagwin, cursor[CurNormal]->cursor);
 			XUnmapWindow(dpy, m->tagwin);
 		}
@@ -3940,8 +5314,8 @@ updatebars(void)
 			//		CopyFromParent, DefaultVisual(dpy, screen),
 			//		CWOverrideRedirect|CWBackPixmap|CWEventMask, &wa);
 			m->barwin = XCreateWindow(dpy, root, m->wx + sp, m->by + vp, m->ww - 2 * sp, bh, 0, DefaultDepth(dpy, screen),
- 				CopyFromParent, DefaultVisual(dpy, screen),
- 				CWOverrideRedirect|CWBackPixmap|CWEventMask, &wa);
+						  CopyFromParent, DefaultVisual(dpy, screen),
+						  CWOverrideRedirect|CWBackPixmap|CWEventMask, &wa);
 			XDefineCursor(dpy, m->barwin, cursor[CurNormal]->cursor);
 			XMapRaised(dpy, m->barwin);
 			XSelectInput(dpy, m->barwin, ButtonPressMask|PointerMotionMask);
@@ -3959,7 +5333,7 @@ updatebars(void)
 	}
 }
 
-void
+	void
 updatebarpos(Monitor *m)
 {
 	int extragap = (m->mw == 1920 && m->mx == 1920) ? 10 : 0; /* only for HDMI monitor */
@@ -3996,7 +5370,7 @@ updatebarpos(Monitor *m)
 //	m->wh -= vp;
 //}
 
-void
+	void
 updateclientlist(void)
 {
 	Client *c;
@@ -4006,11 +5380,11 @@ updateclientlist(void)
 	for (m = mons; m; m = m->next)
 		for (c = m->clients; c; c = c->next)
 			XChangeProperty(dpy, root, netatom[NetClientList],
-				XA_WINDOW, 32, PropModeAppend,
-				(unsigned char *) &(c->win), 1);
+					XA_WINDOW, 32, PropModeAppend,
+					(unsigned char *) &(c->win), 1);
 }
 
-int
+	int
 updategeom(void)
 {
 	int dirty = 0;
@@ -4042,8 +5416,8 @@ updategeom(void)
 		}
 		for (i = 0, m = mons; i < nn && m; m = m->next, i++)
 			if (i >= n
-			|| unique[i].x_org != m->mx || unique[i].y_org != m->my
-			|| unique[i].width != m->mw || unique[i].height != m->mh)
+			    || unique[i].x_org != m->mx || unique[i].y_org != m->my
+			    || unique[i].width != m->mw || unique[i].height != m->mh)
 			{
 				dirty = 1;
 				m->num = i;
@@ -4088,7 +5462,7 @@ updategeom(void)
 	return dirty;
 }
 
-void
+	void
 updatenumlockmask(void)
 {
 	unsigned int i, j;
@@ -4099,12 +5473,12 @@ updatenumlockmask(void)
 	for (i = 0; i < 8; i++)
 		for (j = 0; j < modmap->max_keypermod; j++)
 			if (modmap->modifiermap[i * modmap->max_keypermod + j]
-				== XKeysymToKeycode(dpy, XK_Num_Lock))
+			    == XKeysymToKeycode(dpy, XK_Num_Lock))
 				numlockmask = (1 << i);
 	XFreeModifiermap(modmap);
 }
 
-void
+	void
 updatesizehints(Client *c)
 {
 	long msize;
@@ -4148,7 +5522,7 @@ updatesizehints(Client *c)
 	c->hintsvalid = 1;
 }
 
-void
+	void
 updatestatus(void)
 {
 	flushimgcache();
@@ -4157,16 +5531,43 @@ updatestatus(void)
 	drawbar(selmon);
 }
 
-void
+	void
 updatetitle(Client *c)
 {
+	char prevname[256];
+	strncpy(prevname, c->name, sizeof(prevname) - 1);
+	prevname[sizeof(prevname) - 1] = '\0';
+
 	if (!gettextprop(c->win, netatom[NetWMName], c->name, sizeof c->name))
 		gettextprop(c->win, XA_WM_NAME, c->name, sizeof c->name);
-	if (c->name[0] == '\0') /* hack to mark broken clients */
-		strcpy(c->name, broken);
+	if (c->name[0] == '\0')
+		strcpy(c->name, c->isterminal ? "mrst" : broken);
+
+	if (c->isterminal) {
+		int was_nvim = strncmp(prevname, "nvim:", 5) == 0;
+		int is_nvim  = strncmp(c->name,  "nvim:", 5) == 0;
+		if (was_nvim != is_nvim) {
+			freeicon(c);
+			const char *iconpath = is_nvim
+				? "/usr/share/pixmaps/nvim.svg"
+				: "/usr/share/pixmaps/mrst.png";
+			Imlib_Image img = imlib_load_image(iconpath);
+			if (img) {
+				imlib_context_set_image(img);
+				int w = imlib_image_get_width();
+				int h = imlib_image_get_height();
+				c->icon = drw_picture_create_resized(drw,
+								     (char *)imlib_image_get_data(), w, h, ICONSIZE, ICONSIZE);
+				c->icw = c->ich = ICONSIZE;
+				imlib_free_image();
+			}
+			/* re-grab buttons based on new title state */
+			grabbuttons(c, c == selmon->sel);
+		}
+	}
 }
 
-void
+	void
 updatewindowtype(Client *c)
 {
 	Atom state = getatomprop(c, netatom[NetWMState]);
@@ -4180,7 +5581,7 @@ updatewindowtype(Client *c)
 	}
 }
 
-void
+	void
 updatewmhints(Client *c)
 {
 	XWMHints *wmh;
@@ -4200,6 +5601,50 @@ updatewmhints(Client *c)
 }
 
 void
+setcurrentdesktop(void)
+{
+	long data[] = { 0 };
+	XChangeProperty(dpy, root, netatom[NetCurrentDesktop], XA_CARDINAL, 32,
+		PropModeReplace, (unsigned char *)data, 1);
+}
+
+void
+setdesktopnames(void)
+{
+	XTextProperty text;
+	Xutf8TextListToTextProperty(dpy, (char **)tags, TAGSLENGTH, XUTF8StringStyle, &text);
+	XSetTextProperty(dpy, root, &text, netatom[NetDesktopNames]);
+}
+
+void
+setnumdesktops(void)
+{
+	long data[] = { TAGSLENGTH };
+	XChangeProperty(dpy, root, netatom[NetNumberOfDesktops], XA_CARDINAL, 32,
+		PropModeReplace, (unsigned char *)data, 1);
+}
+
+void
+setviewport(void)
+{
+	long data[] = { 0, 0 };
+	XChangeProperty(dpy, root, netatom[NetDesktopViewport], XA_CARDINAL, 32,
+		PropModeReplace, (unsigned char *)data, 2);
+}
+
+
+void
+updatecurrentdesktop(void)
+{
+    long rawdata[] = { selmon->tagset[selmon->seltags] };
+    int i = 0;
+    while (*rawdata >> (i+1)) i++;
+    long data[] = { i };
+    XChangeProperty(dpy, root, netatom[NetCurrentDesktop], XA_CARDINAL, 32,
+        PropModeReplace, (unsigned char *)data, 1);
+}
+
+	void
 view(const Arg *arg)
 {
 	if ((arg->ui & TAGMASK) == selmon->tagset[selmon->seltags])
@@ -4210,9 +5655,10 @@ view(const Arg *arg)
 		selmon->tagset[selmon->seltags] = arg->ui & TAGMASK;
 	focus(NULL);
 	arrange(selmon);
+	updatecurrentdesktop();
 }
 
-Client *
+	Client *
 wintoclient(Window w)
 {
 	Client *c;
@@ -4225,7 +5671,7 @@ wintoclient(Window w)
 	return NULL;
 }
 
-pid_t
+	pid_t
 winpid(Window w)
 {
 
@@ -4261,24 +5707,24 @@ winpid(Window w)
 #endif /* __linux__ */
 
 #ifdef __OpenBSD__
-        Atom type;
-        int format;
-        unsigned long len, bytes;
-        unsigned char *prop;
-        pid_t ret;
+	Atom type;
+	int format;
+	unsigned long len, bytes;
+	unsigned char *prop;
+	pid_t ret;
 
-        if (XGetWindowProperty(dpy, w, XInternAtom(dpy, "_NET_WM_PID", 0), 0, 1, False, AnyPropertyType, &type, &format, &len, &bytes, &prop) != Success || !prop)
-               return 0;
+	if (XGetWindowProperty(dpy, w, XInternAtom(dpy, "_NET_WM_PID", 0), 0, 1, False, AnyPropertyType, &type, &format, &len, &bytes, &prop) != Success || !prop)
+		return 0;
 
-        ret = *(pid_t*)prop;
-        XFree(prop);
-        result = ret;
+	ret = *(pid_t*)prop;
+	XFree(prop);
+	result = ret;
 
 #endif /* __OpenBSD__ */
 	return result;
 }
 
-pid_t
+	pid_t
 getparentprocess(pid_t p)
 {
 	unsigned int v = 0;
@@ -4311,7 +5757,7 @@ getparentprocess(pid_t p)
 	return (pid_t)v;
 }
 
-int
+	int
 isdescprocess(pid_t p, pid_t c)
 {
 	while (p != c && c != 0)
@@ -4320,7 +5766,7 @@ isdescprocess(pid_t p, pid_t c)
 	return (int)c;
 }
 
-Client *
+	Client *
 termforwin(const Client *w)
 {
 	Client *c;
@@ -4339,7 +5785,7 @@ termforwin(const Client *w)
 	return NULL;
 }
 
-Client *
+	Client *
 swallowingclient(Window w)
 {
 	Client *c;
@@ -4355,7 +5801,7 @@ swallowingclient(Window w)
 	return NULL;
 }
 
-Monitor *
+	Monitor *
 wintomon(Window w)
 {
 	int x, y;
@@ -4377,25 +5823,25 @@ wintomon(Window w)
 /* There's no way to check accesses to destroyed windows, thus those cases are
  * ignored (especially on UnmapNotify's). Other types of errors call Xlibs
  * default error handler, which may call exit. */
-int
+	int
 xerror(Display *dpy, XErrorEvent *ee)
 {
 	if (ee->error_code == BadWindow
-	|| (ee->request_code == X_SetInputFocus && ee->error_code == BadMatch)
-	|| (ee->request_code == X_PolyText8 && ee->error_code == BadDrawable)
-	|| (ee->request_code == X_PolyFillRectangle && ee->error_code == BadDrawable)
-	|| (ee->request_code == X_PolySegment && ee->error_code == BadDrawable)
-	|| (ee->request_code == X_ConfigureWindow && ee->error_code == BadMatch)
-	|| (ee->request_code == X_GrabButton && ee->error_code == BadAccess)
-	|| (ee->request_code == X_GrabKey && ee->error_code == BadAccess)
-	|| (ee->request_code == X_CopyArea && ee->error_code == BadDrawable))
+	    || (ee->request_code == X_SetInputFocus && ee->error_code == BadMatch)
+	    || (ee->request_code == X_PolyText8 && ee->error_code == BadDrawable)
+	    || (ee->request_code == X_PolyFillRectangle && ee->error_code == BadDrawable)
+	    || (ee->request_code == X_PolySegment && ee->error_code == BadDrawable)
+	    || (ee->request_code == X_ConfigureWindow && ee->error_code == BadMatch)
+	    || (ee->request_code == X_GrabButton && ee->error_code == BadAccess)
+	    || (ee->request_code == X_GrabKey && ee->error_code == BadAccess)
+	    || (ee->request_code == X_CopyArea && ee->error_code == BadDrawable))
 		return 0;
 	fprintf(stderr, "mrdwm: fatal error: request code=%d, error code=%d\n",
 		ee->request_code, ee->error_code);
 	return xerrorxlib(dpy, ee); /* may call exit */
 }
 
-int
+	int
 xerrordummy(Display *dpy, XErrorEvent *ee)
 {
 	return 0;
@@ -4403,14 +5849,14 @@ xerrordummy(Display *dpy, XErrorEvent *ee)
 
 /* Startup Error handler to check if another window manager
  * is already running. */
-int
+	int
 xerrorstart(Display *dpy, XErrorEvent *ee)
 {
 	die("mrdwm: another window manager is already running");
 	return -1;
 }
 
-void
+	void
 zoom(const Arg *arg)
 {
 	Client *c = selmon->sel;
@@ -4514,575 +5960,687 @@ zoom(const Arg *arg)
 //	focus(focus_c);
 //}
 
-void
-previewallwin(const Arg *arg){
-    (void)arg;
-    Monitor *m = selmon;
-    Client *c, *focus_c = NULL;
-    unsigned int n;
 
-    for (n = 0, c = m->clients; c; c = c->next){
-        if (ispanel(c)) continue;
-        n++;
-        c->pre.orig_image = getwindowximage(c);
-    }
-    if (n == 0) return;
+	void
+previewallwin(const Arg *arg)
+{
+	(void)arg;
+	Monitor *m   = selmon;
+	Client  *c;
+	Client  *focus_c = NULL;
 
-    /* ── search bar ── */
-    int sb_w = 500;
-    int sb_h = 44;
-    int sb_x = m->wx + (m->ww - sb_w) / 2;
-    int sb_y = m->wy + 24;
+	for (c = m->clients; c; c = c->next) {
+		if (ispanel(c)) continue;
+		c->pre.orig_image = getwindowximage(c);
+	}
 
-    XSetWindowAttributes swa;
-    swa.override_redirect = True;
-    swa.background_pixel  = 0xffffff;
-    swa.event_mask        = KeyPressMask | ExposureMask | ButtonPressMask;
-    Window searchwin = XCreateWindow(dpy, root,
-        sb_x, sb_y, sb_w, sb_h, 2,
-        DefaultDepth(dpy, screen), InputOutput,
-        DefaultVisual(dpy, screen),
-        CWOverrideRedirect | CWBackPixel | CWEventMask, &swa);
+	AppEntry *apps = NULL; int nApps = 0;
+	ov_parse_desktop_files(&apps, &nApps);
+	for (int i = 0; i < nApps; i++) {
+		apps[i].run_count = ov_count_running(&apps[i]);
+		apps[i].running   = (apps[i].run_count > 0);
+	}
 
-    char search_buf[128] = "";
-    int  search_len  = 0;
-    int  cursor_vis  = 1;  /* blink state */
-    int  search_focused = 0; /* becomes 1 after first click on searchwin */
+	/* fonts */
+	XFontStruct *font_n = NULL, *font_b = NULL;
+		const char *fn[] = {
+		"-*-liberation serif-medium-r-*-*-18-*-*-*-*-*-*-*",
+		"-*-dejavu serif-medium-r-*-*-18-*-*-*-*-*-*-*",
+		"-*-times-medium-r-*-*-18-*-*-*-*-*-*-*",
+		"-*-liberation serif-medium-r-*-*-16-*-*-*-*-*-*-*",
+		"-*-dejavu serif-medium-r-*-*-16-*-*-*-*-*-*-*",
+		"fixed", NULL
+	};
+	const char *fb[] = {
+		"-*-liberation serif-bold-r-*-*-18-*-*-*-*-*-*-*",
+		"-*-dejavu serif-bold-r-*-*-18-*-*-*-*-*-*-*",
+		"-*-times-bold-r-*-*-18-*-*-*-*-*-*-*",
+		"-*-liberation serif-bold-r-*-*-16-*-*-*-*-*-*-*",
+		"fixed", NULL
+	};
 
-    XMapRaised(dpy, searchwin);
+	for (int i = 0; fn[i] && !font_n; i++) font_n = XLoadQueryFont(dpy, fn[i]);
+	for (int i = 0; fb[i] && !font_b; i++) font_b = XLoadQueryFont(dpy, fb[i]);
+	if (!font_b) font_b = font_n;
 
-    GC sgc = XCreateGC(dpy, searchwin, 0, NULL);
+	/* geometry */
+	int sw = m->ww, sh = m->wh, sx = m->wx, sy = m->wy;
+	#define OV_SECTION_GAP 20
+	int sb_w   = MIN(OV_SB_MAX_W, sw - 2*OV_MARGIN);
+	int sb_x   = (sw - sb_w) / 2;
+	int sb_y   = OV_SECTION_GAP;
+	int tab_w  = sb_w;
+	int tab_x  = sb_x;
+	int tab_y  = sb_y + OV_SB_H + OV_SECTION_GAP;
+	int pg_y   = sh - OV_PG_H;
+	int grid_y = tab_y + OV_TAB_H + OV_SECTION_GAP;
+	int grid_h = pg_y - grid_y - OV_SECTION_GAP;
+	int grid_w = sw - 2*OV_MARGIN;
+	int app_cols         = 5;
+	int app_rows         = 5;
+	int app_cw           = (grid_w - (app_cols - 1) * OV_GAP) / app_cols;
+	int app_grid_margin  = 0; //OV_GAP;
+	int app_usable_h     = grid_h - 2 * app_grid_margin;
+	int app_ch_dyn       = (app_usable_h - (app_rows - 1) * OV_GAP) / app_rows;
+	if (app_ch_dyn < 80) app_ch_dyn = 80;
+	int app_ch           = app_ch_dyn;
 
-    /* try larger fonts first */
-    XFontStruct *font = XLoadQueryFont(dpy,
-        "-*-dejavu sans-medium-r-*-*-16-*-*-*-*-*-*-*");
-    if (!font) font = XLoadQueryFont(dpy,
-        "-*-liberation sans-medium-r-*-*-16-*-*-*-*-*-*-*");
-    if (!font) font = XLoadQueryFont(dpy,
-        "-*-helvetica-medium-r-*-*-16-*-*-*-*-*-*-*");
-    if (!font) font = XLoadQueryFont(dpy, "fixed");
+	/* overlay */
+	XSetWindowAttributes wa;
+	wa.override_redirect = True;
+	wa.background_pixmap = ParentRelative;
+	wa.event_mask        = ExposureMask | KeyPressMask | ButtonPressMask;
+	Window ov = XCreateWindow(dpy, root, sx, sy, sw, sh, 0,
+				  DefaultDepth(dpy, screen), InputOutput,
+				  DefaultVisual(dpy, screen),
+				  CWOverrideRedirect|CWBackPixmap|CWEventMask, &wa);
+	XMapRaised(dpy, ov);
+	GC gc_ov = XCreateGC(dpy, ov, 0, NULL);
 
-    /* blink timer via X11 timeout — we use select() on X fd */
-    int xfd = ConnectionNumber(dpy);
+	wa.background_pixel = OV_SEARCH_BG;
+	wa.event_mask = ExposureMask | ButtonPressMask;
+	Window sb_win = XCreateWindow(dpy, ov, sb_x, sb_y, sb_w, OV_SB_H, 0,
+				      DefaultDepth(dpy,screen), InputOutput,
+				      DefaultVisual(dpy,screen),
+				      CWOverrideRedirect|CWBackPixel|CWEventMask, &wa);
+	XMapWindow(dpy, sb_win);
+	GC gc_sb = XCreateGC(dpy, sb_win, 0, NULL);
 
-    #define DRAW_SEARCHBAR() do { \
-        XSetForeground(dpy, sgc, 0xffffff); \
-        XFillRectangle(dpy, searchwin, sgc, 0, 0, sb_w, sb_h); \
-        XSetForeground(dpy, sgc, search_focused ? 0x00cc66 : 0xaaaaaa); \
-        XDrawRectangle(dpy, searchwin, sgc, 0, 0, sb_w-1, sb_h-1); \
-        if (font) XSetFont(dpy, sgc, font->fid); \
-        int _pad = 14; \
-        if (search_len == 0 && !search_focused) { \
-            XSetForeground(dpy, sgc, 0x444444); \
-            XDrawString(dpy, searchwin, sgc, _pad, sb_h/2+6, \
-                "Click to search windows...", 26); \
-        } else if (search_len == 0 && search_focused) { \
-            XSetForeground(dpy, sgc, 0x444444); \
-            XDrawString(dpy, searchwin, sgc, _pad, sb_h/2+6, \
-                "Type a window name...", 21); \
-            if (cursor_vis) { \
-                XSetForeground(dpy, sgc, 0x00cc66); \
-                XDrawLine(dpy, searchwin, sgc, _pad, 8, _pad, sb_h-8); \
-            } \
-        } else { \
-            XSetForeground(dpy, sgc, 0x111111); \
-            XDrawString(dpy, searchwin, sgc, _pad, sb_h/2+6, \
-                search_buf, search_len); \
-            if (cursor_vis) { \
-                int _cw2 = font ? XTextWidth(font, search_buf, search_len) \
-                                : search_len * 9; \
-                XSetForeground(dpy, sgc, 0x00cc66); \
-                XDrawLine(dpy, searchwin, sgc, \
-                    _pad + _cw2 + 2, 8, \
-                    _pad + _cw2 + 2, sb_h-8); \
-            } \
-        } \
-    } while(0)
+	wa.background_pixel = OV_TAB_NORM_S;
+	Window tab_win = XCreateWindow(dpy, ov, tab_x, tab_y, tab_w, OV_TAB_H, 0,
+				       DefaultDepth(dpy,screen), InputOutput,
+				       DefaultVisual(dpy,screen),
+				       CWOverrideRedirect|CWBackPixel|CWEventMask, &wa);
+	XMapWindow(dpy, tab_win);
+	GC gc_tab = XCreateGC(dpy, tab_win, 0, NULL);
 
-    DRAW_SEARCHBAR();
+	wa.background_pixel = OV_PG_BG_S;
+	Window pg_win = XCreateWindow(dpy, ov, 0, pg_y, sw, OV_PG_H, 0,
+				      DefaultDepth(dpy,screen), InputOutput,
+				      DefaultVisual(dpy,screen),
+				      CWOverrideRedirect|CWBackPixel|CWEventMask, &wa);
+	XMapWindow(dpy, pg_win);
+	GC gc_pg = XCreateGC(dpy, pg_win, 0, NULL);
 
-    /* grid area */
-    int grid_top    = sb_y + sb_h + 20;
-    int grid_bottom = m->wy + m->wh - 60;
+	/* state */
+	OverviewTab  cur_tab  = TAB_WINDOWS;
+	OverviewView cur_view = VIEW_MAIN;
+	AppEntry    *sel_app  = NULL;
+	int page = 0, total_pages = 1;
+	char search_buf[128] = ""; int search_len = 0;
+	int cursor_vis = 1, done = 0, kbd_idx = -1;
 
-    XRenderPictFormat *scrfmt =
-        XRenderFindVisualFormat(dpy, DefaultVisual(dpy, screen));
+#define OV_MAX_CARDS 1024
+	Window  card_wins[OV_MAX_CARDS];
+	void   *card_ptrs[OV_MAX_CARDS];
+	int     card_type[OV_MAX_CARDS];
+	int     n_cards = 0;
+	Window  hov_win = None;
+	int     win_cw = 0, win_ch = 0;
 
-    #define BAR_H 56
+#define RAISE_UI() do { \
+	XRaiseWindow(dpy, sb_win); \
+	XRaiseWindow(dpy, tab_win); \
+	XRaiseWindow(dpy, pg_win); \
+} while(0)
 
-    /* ── draw one preview window ── */
-    #define REDRAW_CLIENT(cl) do { \
-        if (!(cl)->pre.win || !(cl)->pre.scaled_image) break; \
-        int _pw   = (cl)->pre.scaled_image->width; \
-        int _ph   = (cl)->pre.scaled_image->height; \
-        int _img_h = _ph - BAR_H; \
-        if (_img_h < 1) _img_h = 1; \
-        GC _gc = XCreateGC(dpy, (cl)->pre.win, 0, NULL); \
-        /* screenshot */ \
-        XPutImage(dpy, (cl)->pre.win, _gc, (cl)->pre.scaled_image, \
-            0, 0, 0, 0, _pw, _img_h); \
-        /* dark bottom bar */ \
-        XSetForeground(dpy, _gc, 0x141414); \
-        XFillRectangle(dpy, (cl)->pre.win, _gc, 0, _img_h, _pw, BAR_H); \
-        XSetForeground(dpy, _gc, 0x2c2c2c); \
-        XDrawLine(dpy, (cl)->pre.win, _gc, 0, _img_h, _pw, _img_h); \
-        /* icon + title centered */ \
-        int _ico_sz  = 30; \
-        int _has_ico = ((cl)->icon && (cl)->icw > 0 && (cl)->ich > 0) ? 1 : 0; \
-        char _ttl[64]; \
-        snprintf(_ttl, sizeof(_ttl), "%.28s", (cl)->name); \
-        int _text_w = (font && strlen(_ttl) > 0) \
-            ? XTextWidth(font, _ttl, strlen(_ttl)) : 0; \
-        int _gap2   = _has_ico ? 10 : 0; \
-        int _total2 = (_has_ico ? _ico_sz : 0) + _gap2 + _text_w; \
-        int _sx2    = (_pw - _total2) / 2; \
-        if (_sx2 < 6) _sx2 = 6; \
-        int _cy2    = _img_h + BAR_H / 2; \
-        /* scale icon with XRender transform */ \
-        if (_has_ico) { \
-            Pixmap _pm2 = XCreatePixmap(dpy, root, _ico_sz, _ico_sz, \
-                DefaultDepth(dpy, screen)); \
-            XRenderPictFormat *_vf = XRenderFindVisualFormat(dpy, \
-                DefaultVisual(dpy, screen)); \
-            Picture _pd = XRenderCreatePicture(dpy, _pm2, _vf, 0, NULL); \
-            XRenderColor _bg2 = {0, 0, 0, 0}; \
-            XRenderFillRectangle(dpy, PictOpSrc, _pd, &_bg2, \
-                0, 0, _ico_sz, _ico_sz); \
-            XTransform _xf2; \
-            memset(&_xf2, 0, sizeof(_xf2)); \
-            _xf2.matrix[0][0] = XDoubleToFixed((double)(cl)->icw / _ico_sz); \
-            _xf2.matrix[1][1] = XDoubleToFixed((double)(cl)->ich / _ico_sz); \
-            _xf2.matrix[2][2] = XDoubleToFixed(1.0); \
-            XRenderSetPictureTransform(dpy, (cl)->icon, &_xf2); \
-            XRenderComposite(dpy, PictOpOver, (cl)->icon, None, _pd, \
-                0, 0, 0, 0, 0, 0, _ico_sz, _ico_sz); \
-            XTransform _id2; memset(&_id2, 0, sizeof(_id2)); \
-            _id2.matrix[0][0] = _id2.matrix[1][1] = _id2.matrix[2][2] = \
-                XDoubleToFixed(1.0); \
-            XRenderSetPictureTransform(dpy, (cl)->icon, &_id2); \
-            Picture _pw2 = XRenderCreatePicture(dpy, (cl)->pre.win, \
-                scrfmt, 0, NULL); \
-            XRenderComposite(dpy, PictOpOver, _pd, None, _pw2, \
-                0, 0, 0, 0, \
-                _sx2, _cy2 - _ico_sz / 2, \
-                _ico_sz, _ico_sz); \
-            XRenderFreePicture(dpy, _pd); \
-            XRenderFreePicture(dpy, _pw2); \
-            XFreePixmap(dpy, _pm2); \
-            _sx2 += _ico_sz + _gap2; \
-        } \
-        /* title text */ \
-        if (font && _text_w > 0) { \
-            int _ty2 = _cy2 + (font->ascent - font->descent) / 2; \
-            XSetFont(dpy, _gc, font->fid); \
-            XSetForeground(dpy, _gc, 0x000000); \
-            XDrawString(dpy, (cl)->pre.win, _gc, \
-                _sx2+1, _ty2+1, _ttl, strlen(_ttl)); \
-            XSetForeground(dpy, _gc, 0xeeeeee); \
-            XDrawString(dpy, (cl)->pre.win, _gc, \
-                _sx2, _ty2, _ttl, strlen(_ttl)); \
-        } \
-        XFreeGC(dpy, _gc); \
-    } while(0)
+#define DESTROY_CARDS() do { \
+	for (int _i = 0; _i < n_cards; _i++) \
+		if (card_wins[_i]) { \
+			XDestroyWindow(dpy, card_wins[_i]); \
+			card_wins[_i] = 0; \
+		} \
+	n_cards = 0; hov_win = None; kbd_idx = -1; \
+} while(0)
 
-    /* max fraction of screen a single window may occupy */
-    #define MAX_SINGLE_W 0.55
-    #define MAX_SINGLE_H 0.55
+#define DIM_BG() do { \
+	XSetForeground(dpy, gc_ov, OV_DIM); \
+	XFillRectangle(dpy, ov, gc_ov, 0, 0, sw, sh); \
+} while(0)
 
-    /* ── relayout visible windows ── */
-    #define RELAYOUT_VISIBLE(filter_expr) do { \
-        unsigned int _nvis = 0; \
-        for (c = m->clients; c; c = c->next) { \
-            if (ispanel(c) || !c->pre.win || !c->pre.orig_image) continue; \
-            if (filter_expr) _nvis++; \
-        } \
-        /* hide non-matching */ \
-        for (c = m->clients; c; c = c->next) { \
-            if (ispanel(c) || !c->pre.win) continue; \
-            if (!(filter_expr)) XUnmapWindow(dpy, c->pre.win); \
-        } \
-        if (_nvis > 0) { \
-            unsigned int _cols = 1; \
-            while (_cols * _cols < _nvis) _cols++; \
-            unsigned int _rows = (_nvis + _cols - 1) / _cols; \
-            int _gap3 = 16; \
-            int _avw3 = m->ww - 60; \
-            int _avh3 = grid_bottom - grid_top; \
-            int _cw3, _img_h3, _ch3; \
-            if (_nvis == 1) { \
-                /* single window: cap size */ \
-                _cw3   = (int)(m->ww * MAX_SINGLE_W); \
-                _img_h3 = _cw3 * 9 / 16; \
-                _ch3   = _img_h3 + BAR_H; \
-                if (_ch3 > (int)(m->wh * MAX_SINGLE_H)) { \
-                    _ch3   = (int)(m->wh * MAX_SINGLE_H); \
-                    _img_h3 = _ch3 - BAR_H; \
-                    _cw3   = _img_h3 * 16 / 9; \
-                } \
-            } else { \
-                _cw3   = (_avw3 - (int)(_cols-1)*_gap3) / (int)_cols; \
-                _img_h3 = _cw3 * 9 / 16; \
-                _ch3   = _img_h3 + BAR_H; \
-                int _need3 = (int)_rows*_ch3 + (int)(_rows-1)*_gap3; \
-                if (_need3 > _avh3) { \
-                    _ch3   = (_avh3 - (int)(_rows-1)*_gap3) / (int)_rows; \
-                    _img_h3 = _ch3 - BAR_H; \
-                    if (_img_h3 < 40) _img_h3 = 40; \
-                    _ch3   = _img_h3 + BAR_H; \
-                    _cw3   = _img_h3 * 16 / 9; \
-                } \
-            } \
-            if (_cw3 < 120) _cw3 = 120; \
-            int _tw3 = (int)_cols*_cw3 + (int)(_cols-1)*_gap3; \
-            int _th3 = (int)_rows*_ch3 + (int)(_rows-1)*_gap3; \
-            int _sx3 = m->wx + (m->ww - _tw3) / 2; \
-            int _sy3 = grid_top + (grid_bottom - grid_top - _th3) / 2; \
-            if (_sy3 < grid_top) _sy3 = grid_top; \
-            unsigned int _vi3 = 0; \
-            for (c = m->clients; c; c = c->next) { \
-                if (ispanel(c) || !c->pre.win || !c->pre.orig_image) continue; \
-                if (!(filter_expr)) continue; \
-                int _col3 = (int)(_vi3 % _cols); \
-                int _row3 = (int)(_vi3 / _cols); \
-                int _nx3  = _sx3 + _col3 * (_cw3 + _gap3); \
-                int _ny3  = _sy3 + _row3 * (_ch3 + _gap3); \
-                XMoveResizeWindow(dpy, c->pre.win, _nx3, _ny3, _cw3, _ch3); \
-                if (c->pre.scaled_image) { \
-                    XDestroyImage(c->pre.scaled_image); \
-                    c->pre.scaled_image = NULL; \
-                } \
-                c->pre.scaled_image = scaleimagetofit( \
-                    c->pre.orig_image, \
-                    (unsigned int)_cw3, \
-                    (unsigned int)_ch3); \
-                XMapWindow(dpy, c->pre.win); \
-                REDRAW_CLIENT(c); \
-                _vi3++; \
-            } \
-        } \
-    } while(0)
+#define _OV_ADD_RUN_WIN(_cc, _oy2, _cw2, _ch2) do { \
+	if (n_cards < OV_MAX_CARDS && (_oy2)+(int)(_ch2) <= pg_y-4) { \
+		char _at[256], _tt[256]; \
+		ov_run_app_text(_at, sizeof(_at), sel_app->name); \
+		ov_run_title_text(_tt, sizeof(_tt), (_cc)->name); \
+		int _rox2 = OV_MARGIN + (grid_w - (int)(_cw2)) / 2; \
+		Window _cwin = ov_make_card_win(ov, _rox2, (_oy2), (_cw2), (_ch2), OV_CARD_SOLID); \
+		XMapWindow(dpy, _cwin); \
+		GC _cg = XCreateGC(dpy, _cwin, 0, NULL); \
+		ov_draw_run_card(_cwin, _cg, font_n, _at, _tt, \
+				 sel_app->icon_pic, 0, kbd_idx==n_cards, 0, 0UL, (_cw2), (_ch2)); \
+		XFreeGC(dpy, _cg); \
+		card_wins[n_cards] = _cwin; card_ptrs[n_cards] = (_cc); \
+		card_type[n_cards] = 4; n_cards++; \
+	} \
+} while(0)
 
-    /* ── create preview windows ── */
-    for (c = m->clients; c; c = c->next){
-        if (ispanel(c) || !c->pre.orig_image) continue;
-        XSetWindowAttributes cwa;
-        cwa.override_redirect = True;
-        cwa.background_pixel  = 0x111111;
-        cwa.event_mask        = ButtonPress | EnterWindowMask | LeaveWindowMask;
-        if (!c->pre.win)
-            c->pre.win = XCreateWindow(dpy, root, 0, 0, 100, 80, 2,
-                DefaultDepth(dpy, screen), InputOutput,
-                DefaultVisual(dpy, screen),
-                CWOverrideRedirect | CWBackPixel | CWEventMask, &cwa);
-        XSetWindowBorder(dpy, c->pre.win, scheme[SchemeNorm][ColBorder].pixel);
-        XUnmapWindow(dpy, c->win);
-        XSelectInput(dpy, c->pre.win,
-            ButtonPress | EnterWindowMask | LeaveWindowMask);
-    }
+#define REBUILD_CARDS() do { \
+	DESTROY_CARDS(); \
+	DIM_BG(); \
+	if (cur_view == VIEW_APP_RUNNING && sel_app) { \
+		int _ch2 = app_ch, _cw2 = app_cw, _oy2 = grid_y; \
+		int _run_ox = OV_MARGIN + (grid_w - _cw2) / 2; \
+		/* card 0: go back */ \
+		{ Window _cw = ov_make_card_win(ov, _run_ox, _oy2, _cw2, _ch2, OV_CARD_SOLID); \
+			XMapWindow(dpy, _cw); \
+			GC _g = XCreateGC(dpy, _cw, 0, NULL); \
+			ov_draw_run_card(_cw, _g, font_n, \
+					 "Go back to Applications", "", None, 0, kbd_idx==0, \
+					 1, 0x444466UL, _cw2, _ch2); \
+			XFreeGC(dpy, _g); \
+			card_wins[n_cards]=_cw; card_ptrs[n_cards]=NULL; \
+			card_type[n_cards]=2; n_cards++; _oy2 += _ch2 + OV_GAP; } \
+		/* card 1: launch new — line1 = "App: name", line2 = "Launch new name" */ \
+		{ char _lt1[256], _lt2[256]; \
+			ov_run_app_text(_lt1, sizeof(_lt1), sel_app->name); \
+			ov_run_launch_text(_lt2, sizeof(_lt2), sel_app->name); \
+			Window _cw = ov_make_card_win(ov, _run_ox, _oy2, _cw2, _ch2, OV_CARD_SOLID); \
+			XMapWindow(dpy, _cw); \
+			GC _g = XCreateGC(dpy, _cw, 0, NULL); \
+			ov_draw_run_card(_cw, _g, font_n, _lt1, _lt2, \
+					 sel_app->icon_pic, 0, kbd_idx==1, 0, 0UL, _cw2, _ch2); \
+			XFreeGC(dpy, _g); \
+			card_wins[n_cards]=_cw; card_ptrs[n_cards]=sel_app; \
+			card_type[n_cards]=3; n_cards++; _oy2 += _ch2 + OV_GAP; } \
+		/* running windows */ \
+		for (c = m->clients; c; c = c->next) { \
+			if (ispanel(c)) continue; \
+			char _ln[256], _cn[256]; \
+			snprintf(_ln, sizeof(_ln), "%s", sel_app->name); \
+			for (int _i=0;_ln[_i];_i++) _ln[_i]=(char)tolower((unsigned char)_ln[_i]); \
+			snprintf(_cn, sizeof(_cn), "%s", c->name); \
+			for (int _i=0;_cn[_i];_i++) _cn[_i]=(char)tolower((unsigned char)_cn[_i]); \
+			if (!strstr(_cn,_ln) && !strstr(_ln,_cn)) continue; \
+			_OV_ADD_RUN_WIN(c, _oy2, _cw2, _ch2); \
+			_oy2 += _ch2 + OV_GAP; \
+		} \
+		total_pages = 1; page = 0; \
+	} else if (cur_tab == TAB_WINDOWS) { \
+		void *_items[OV_MAX_CARDS]; int _ni = 0; \
+		for (c=m->clients;c;c=c->next) { \
+			if (ispanel(c)||!c->pre.orig_image) continue; \
+			if (search_len>0&&!strcasestr(c->name,search_buf)) continue; \
+			if (_ni<OV_MAX_CARDS) _items[_ni++]=c; \
+		} \
+		total_pages = (_ni+OV_WIN_PER_PG-1)/OV_WIN_PER_PG; \
+		if (total_pages<1) total_pages=1; \
+		if (page>=total_pages) page=total_pages-1; \
+		int _start=page*OV_WIN_PER_PG, _end=MIN(_start+OV_WIN_PER_PG,_ni); \
+		int _vis=_end-_start; \
+		int _cols, _rows; \
+		if      (_vis<=1){_cols=1;_rows=1;} \
+		else if (_vis==2){_cols=2;_rows=1;} \
+		else if (_vis==3){_cols=3;_rows=1;} \
+		else if (_vis==4){_cols=2;_rows=2;} \
+		else             {_cols=3;_rows=2;} \
+		int _max_h; \
+		if      (_rows==1&&_cols==1) _max_h = (int)(grid_h*0.995); \
+		else if (_rows==1&&_cols==2) _max_h=(int)(grid_h*0.70); \
+		else if (_rows==1&&_cols==3) _max_h=(int)(grid_h*0.55); \
+		else                         _max_h=grid_h; \
+		int _cw=(grid_w-(_cols-1)*OV_GAP)/_cols; \
+		int _ch=(MAX(1,_max_h)-(_rows-1)*OV_GAP)/_rows; \
+		int _img_h=_ch-OV_TITLEBAR_H; if(_img_h<60)_img_h=60; \
+		int _cw2=(int)(_img_h*16.0/9.0); if(_cw2<_cw)_cw=_cw2; \
+		_ch=_img_h+OV_TITLEBAR_H; \
+		int _gw=_cols*_cw+(_cols-1)*OV_GAP; \
+		int _gh=_rows*_ch+(_rows-1)*OV_GAP; \
+		int _ox=OV_MARGIN+(grid_w-_gw)/2; \
+		int _oy=grid_y+(grid_h-_gh)/2; if(_oy<grid_y)_oy=grid_y; \
+		win_cw=_cw; win_ch=_ch; \
+		if (_ni == 0 && n_cards < OV_MAX_CARDS) { \
+		    int _pcw = grid_w * 2 / 3, _pch = grid_h * 3 / 4; \
+      		    int _ppx = OV_MARGIN + (grid_w - _pcw) / 2; \
+      		    int _ppy = grid_y + (grid_h - _pch) / 2; \
+      		    Window _pw = ov_make_card_win(ov, _ppx, _ppy, _pcw, _pch, OV_CARD_SOLID); \
+      		    XMapWindow(dpy, _pw); \
+      		    GC _pg2 = XCreateGC(dpy, _pw, 0, NULL); \
+      		    ov_fill_round(_pw, _pg2, OV_CARD_SOLID, OV_DIM, 0, 0, _pcw - 1, _pch - 1, OV_CORNER_R); \
+      		    ov_text_c(_pw, _pg2, font_n, OV_TEXT_LO, "No active windows", 0, 0, _pcw, _pch); \
+      		    ov_rect_round(_pw, _pg2, OV_BORDER_NORM, 0, 0, _pcw - 1, _pch - 1, OV_CORNER_R); \
+      		    XFreeGC(dpy, _pg2); \
+      		    card_wins[n_cards] = _pw; \
+      		    card_ptrs[n_cards] = NULL; \
+      		    card_type[n_cards] = -1; \
+      		    n_cards++; \
+      		} \
+		for (int _i=_start;_i<_end;_i++) { \
+			Client *_cc=(Client*)_items[_i]; \
+			int _col=(_i-_start)%_cols, _row=(_i-_start)/_cols; \
+			int _cx=_ox+_col*(_cw+OV_GAP), _cy=_oy+_row*(_ch+OV_GAP); \
+			Window _cwin=ov_make_card_win(ov,_cx,_cy,_cw,_ch,OV_CARD_SOLID); \
+			if(_cc->pre.scaled_image){XDestroyImage(_cc->pre.scaled_image);_cc->pre.scaled_image=NULL;} \
+			_cc->pre.scaled_image=scaleimagetofit(_cc->pre.orig_image,MAX(1,(unsigned)_cw),MAX(1,(unsigned)_img_h)); \
+			XMapWindow(dpy,_cwin); \
+			GC _cg=XCreateGC(dpy,_cwin,0,NULL); \
+			ov_draw_win_card(_cwin,_cg,font_n,_cc,0,0,_cw,_ch); \
+			XFreeGC(dpy,_cg); \
+			card_wins[n_cards]=_cwin; card_ptrs[n_cards]=_cc; \
+			card_type[n_cards]=0; n_cards++; \
+			XUnmapWindow(dpy,_cc->win); \
+		} \
+	} else { \
+		void *_items[OV_MAX_CARDS]; int _ni=0; \
+		for (int _ai=0;_ai<nApps;_ai++) { \
+			if (search_len>0&&!strcasestr(apps[_ai].name,search_buf)) continue; \
+			if (_ni<OV_MAX_CARDS) _items[_ni++]=&apps[_ai]; \
+		} \
+		int _per_pg = app_cols * app_rows; \
+		total_pages=(_ni+_per_pg-1)/_per_pg; \
+		if(total_pages<1)total_pages=1; \
+		if(page>=total_pages)page=total_pages-1; \
+		int _start=page*_per_pg, _end=MIN(_start+_per_pg,_ni); \
+		int _vis2=_end-_start; (void)_vis2; \
+		int _total_w = app_cols * app_cw + (app_cols - 1) * OV_GAP; \
+		int _total_h = app_rows * app_ch + (app_rows - 1) * OV_GAP; \
+		int _ox = OV_MARGIN + (grid_w - _total_w) / 2; \
+		int _oy = grid_y + app_grid_margin + \
+			  (((grid_h - 2 * app_grid_margin) - _total_h) / 2); \
+		if (_oy < grid_y + app_grid_margin) _oy = grid_y + app_grid_margin; \
+		for (int _i=_start;_i<_end;_i++) { \
+			AppEntry *_ae=(AppEntry*)_items[_i]; \
+			if(_ae->icon_pic==None&&_ae->icon_path[0]) \
+				_ae->icon_pic=ov_load_icon(_ae->icon_path,OV_ICON_SZ); \
+			int _col=(_i-_start)%app_cols, _row=(_i-_start)/app_cols; \
+			int _cx=_ox+_col*(app_cw+OV_GAP); \
+			int _cy=_oy+_row*(app_ch+OV_GAP); \
+			if(_cy+app_ch>pg_y-4) continue; \
+			Window _cwin=ov_make_card_win(ov,_cx,_cy,app_cw,app_ch,OV_CARD_SOLID); \
+			XMapWindow(dpy,_cwin); \
+			GC _cg=XCreateGC(dpy,_cwin,0,NULL); \
+			ov_draw_app_card(_cwin,_cg,font_n,_ae,0,0,app_cw,app_ch); \
+			XFreeGC(dpy,_cg); \
+			card_wins[n_cards]=_cwin; card_ptrs[n_cards]=_ae; \
+			card_type[n_cards]=1; n_cards++; \
+		} \
+	} \
+	ov_draw_pager(pg_win,gc_pg,font_n,page,total_pages,sw,OV_PG_H); \
+	RAISE_UI(); \
+} while(0)
 
-    /* initial layout */
-    RELAYOUT_VISIBLE(1);
+#define REDRAW_CARD(_i, _hov, _sel) do { \
+	if ((_i)<0||(_i)>=n_cards||!card_wins[(_i)]) break; \
+	int _t = card_type[(_i)]; \
+	GC _cg = XCreateGC(dpy, card_wins[(_i)], 0, NULL); \
+	if (_t < 0) break; \
+	if (_t == 0) { \
+		ov_draw_win_card(card_wins[(_i)], _cg, font_n, \
+				 (Client*)card_ptrs[(_i)], (_hov), (_sel), win_cw, win_ch); \
+	} else if (_t == 1) { \
+		ov_draw_app_card(card_wins[(_i)], _cg, font_n, \
+				 (AppEntry*)card_ptrs[(_i)], (_hov), (_sel), app_cw, app_ch); \
+	} else if (_t == 2) { \
+		int _rw2 = app_cw,   _rh2 = app_ch; \
+		ov_draw_run_card(card_wins[(_i)], _cg, font_n, \
+				 "Go back to Applications", "", None, (_hov), (_sel), \
+				 1, 0x444466UL, _rw2, _rh2); \
+	} else if (_t == 3 && sel_app) { \
+		int _rw2 = app_cw,   _rh2 = app_ch; \
+		char _lt1[256], _lt2[256]; \
+		ov_run_app_text(_lt1, sizeof(_lt1), sel_app->name); \
+		ov_run_launch_text(_lt2, sizeof(_lt2), sel_app->name); \
+		ov_draw_run_card(card_wins[(_i)], _cg, font_n, _lt1, _lt2, \
+				 sel_app->icon_pic, (_hov), (_sel), 0, 0UL, _rw2, _rh2); \
+	} else if (_t == 4 && sel_app && card_ptrs[(_i)]) { \
+		int _rw2 = app_cw,   _rh2 = app_ch; \
+		Client *_cc = (Client*)card_ptrs[(_i)]; \
+		char _at[256], _tt[256]; \
+		ov_run_app_text(_at, sizeof(_at), sel_app->name); \
+		ov_run_title_text(_tt, sizeof(_tt), _cc->name); \
+		ov_draw_run_card(card_wins[(_i)], _cg, font_n, _at, _tt, \
+				 sel_app->icon_pic, (_hov), (_sel), 0, 0UL, _rw2, _rh2); \
+	} \
+	XFreeGC(dpy, _cg); \
+} while(0)
 
-    /* raise panel and search bar */
-    for (c = m->clients; c; c = c->next)
-        if (ispanel(c)) { XMapWindow(dpy, c->win); XRaiseWindow(dpy, c->win); }
-    XRaiseWindow(dpy, searchwin);
+	REBUILD_CARDS();
+	ov_draw_searchbar(sb_win, gc_sb, font_b,
+			  search_buf, search_len, cursor_vis, sb_w, OV_SB_H);
+	ov_draw_tabs(tab_win, gc_tab, font_b, cur_tab, tab_w, OV_TAB_H);
 
-    XGrabKeyboard(dpy, root, True, GrabModeAsync, GrabModeAsync, CurrentTime);
-    XGrabPointer(dpy, root, True,
-        ButtonPressMask | EnterWindowMask | LeaveWindowMask,
-        GrabModeAsync, GrabModeAsync, None, None, CurrentTime);
+	for (c = m->clients; c; c = c->next)
+		if (ispanel(c)) { XMapWindow(dpy,c->win); XRaiseWindow(dpy,c->win); }
+	RAISE_UI();
 
-    XEvent event;
-    XSync(dpy, False);
-    while (XCheckMaskEvent(dpy, ButtonPressMask | KeyPressMask, &event));
+	XGrabKeyboard(dpy, root, True, GrabModeAsync, GrabModeAsync, CurrentTime);
+	XGrabPointer(dpy, root, True,
+		     ButtonPressMask|EnterWindowMask|LeaveWindowMask,
+		     GrabModeAsync, GrabModeAsync, None, None, CurrentTime);
+	XSync(dpy, False);
+	{ XEvent _e; while (XCheckMaskEvent(dpy, ButtonPressMask|KeyPressMask, &_e)); }
 
-    int done = 0;
-    struct timeval tv;
-    fd_set fds;
+	int xfd = ConnectionNumber(dpy);
+	fd_set fds; struct timeval tv;
 
-    while (!done) {
-        /* blink cursor every 500ms when search is focused */
-        FD_ZERO(&fds);
-        FD_SET(xfd, &fds);
-        tv.tv_sec  = 0;
-        tv.tv_usec = 500000; /* 500ms */
+	while (!done) {
+		FD_ZERO(&fds); FD_SET(xfd, &fds);
+		tv.tv_sec = 0; tv.tv_usec = 500000;
+		if (select(xfd+1, &fds, NULL, NULL, &tv) == 0) {
+			cursor_vis = !cursor_vis;
+			ov_draw_searchbar(sb_win, gc_sb, font_b,
+					  search_buf, search_len, cursor_vis, sb_w, OV_SB_H);
+			XFlush(dpy);
+			continue;
+		}
 
-        int ready = select(xfd + 1, &fds, NULL, NULL, &tv);
+		while (XPending(dpy)) {
+			XEvent ev; XNextEvent(dpy, &ev);
+			switch (ev.type) {
 
-        if (ready == 0) {
-            /* timeout: blink cursor */
-            if (search_focused) {
-                cursor_vis = !cursor_vis;
-                DRAW_SEARCHBAR();
-                XRaiseWindow(dpy, searchwin);
-                XFlush(dpy);
-            }
-            continue;
-        }
+			case Expose:
+				if (ev.xexpose.window == ov)
+					DIM_BG();
+				else if (ev.xexpose.window == sb_win)
+					ov_draw_searchbar(sb_win, gc_sb, font_b,
+							  search_buf, search_len, cursor_vis,
+							  sb_w, OV_SB_H);
+				else if (ev.xexpose.window == tab_win)
+					ov_draw_tabs(tab_win, gc_tab, font_b, cur_tab, tab_w, OV_TAB_H);
+				else if (ev.xexpose.window == pg_win)
+					ov_draw_pager(pg_win, gc_pg, font_n, page, total_pages, sw, OV_PG_H);
+				else {
+					for (int i = 0; i < n_cards; i++) {
+						if (card_wins[i] != ev.xexpose.window) continue;
+						REDRAW_CARD(i, card_wins[i]==hov_win, i==kbd_idx);
+						break;
+					}
+				}
+				break;
 
-        while (XPending(dpy)) {
-            XNextEvent(dpy, &event);
-            switch (event.type) {
+			case EnterNotify:
+				for (int i = 0; i < n_cards; i++) {
+					if (card_wins[i] != ev.xcrossing.window) continue;
+					hov_win = card_wins[i];
+					REDRAW_CARD(i, 1, i==kbd_idx);
+					break;
+				}
+				break;
 
-            case Expose:
-                if (event.xexpose.window == searchwin) {
-                    DRAW_SEARCHBAR();
-                    XRaiseWindow(dpy, searchwin);
-                } else {
-                    for (c = m->clients; c; c = c->next) {
-                        if (ispanel(c)) continue;
-                        if (c->pre.win == event.xexpose.window) {
-                            REDRAW_CLIENT(c); break;
-                        }
-                    }
-                }
-                break;
+			case LeaveNotify:
+				for (int i = 0; i < n_cards; i++) {
+					if (card_wins[i] != ev.xcrossing.window) continue;
+					if (hov_win == card_wins[i]) hov_win = None;
+					REDRAW_CARD(i, 0, i==kbd_idx);
+					break;
+				}
+				break;
 
-            case KeyPress: {
-                KeySym ks = XKeycodeToKeysym(dpy, event.xkey.keycode, 0);
-                cursor_vis = 1; /* reset blink on keypress */
-                if (ks == XK_Escape) {
-                    done = 1;
-                } else if (ks == XK_BackSpace) {
-                    if (search_len > 0) search_buf[--search_len] = '\0';
-                    DRAW_SEARCHBAR();
-                    XRaiseWindow(dpy, searchwin);
-                    if (search_len == 0)
-                        RELAYOUT_VISIBLE(1);
-                    else
-                        RELAYOUT_VISIBLE(
-                            strcasestr(c->name, search_buf) != NULL);
-                    XRaiseWindow(dpy, searchwin);
-                } else if (ks == XK_Return) {
-                    Client *match = NULL;
-                    for (c = m->clients; c; c = c->next) {
-                        if (ispanel(c) || !c->pre.win) continue;
-                        if (search_len == 0 ||
-                            strcasestr(c->name, search_buf)) {
-                            match = c; break;
-                        }
-                    }
-                    if (match) {
-                        for (c = m->clients; c; c = c->next) {
-                            if (ispanel(c)) continue;
-                            if (c->pre.win) XUnmapWindow(dpy, c->pre.win);
-                            XMapWindow(dpy, c->win);
-                            if (c->pre.orig_image)
-                                { XDestroyImage(c->pre.orig_image);
-                                  c->pre.orig_image = NULL; }
-                            if (c->pre.scaled_image)
-                                { XDestroyImage(c->pre.scaled_image);
-                                  c->pre.scaled_image = NULL; }
-                        }
-                        selmon->seltags ^= 1;
-                        m->tagset[selmon->seltags] = match->tags;
-                        focus_c = match;
-                        focus(NULL);
-                    }
-                    done = 1;
-                } else {
-                    char buf[8] = {0};
-                    XLookupString(&event.xkey, buf, sizeof(buf)-1, &ks, NULL);
-                    if (buf[0] >= ' ' && buf[0] < 127 &&
-                        search_len < (int)sizeof(search_buf)-1) {
-                        search_buf[search_len++] = buf[0];
-                        search_buf[search_len]   = '\0';
-                        search_focused = 1;
-                        DRAW_SEARCHBAR();
-                        XRaiseWindow(dpy, searchwin);
-                        RELAYOUT_VISIBLE(
-                            strcasestr(c->name, search_buf) != NULL);
-                        XRaiseWindow(dpy, searchwin);
-                    }
-                }
-                break;
-            }
+			case ButtonPress: {
+				if (ev.xbutton.window == sb_win) break;
 
-            case ButtonPress:
-                if (event.xbutton.window == searchwin) {
-                    search_focused = 1;
-                    cursor_vis = 1;
-                    DRAW_SEARCHBAR();
-                    XRaiseWindow(dpy, searchwin);
-                    break;
-                }
-                if (event.xbutton.button == Button1) {
-                    int _clicked_preview = False;
-                    for (c = m->clients; c; c = c->next){
-                        if (ispanel(c)) continue;
-                        if (event.xbutton.window == c->pre.win)
-                            _clicked_preview = True;
-                    }
-                    for (c = m->clients; c; c = c->next){
-                        if (ispanel(c)) continue;
-                        if (c->pre.win) XUnmapWindow(dpy, c->pre.win);
-                        if (event.xbutton.window == c->pre.win){
-                            selmon->seltags ^= 1;
-                            m->tagset[selmon->seltags] = c->tags;
-                            focus_c = c;
-                            focus(NULL);
-                        }
-                        XMapWindow(dpy, c->win);
-                        if (c->pre.orig_image)
-                            { XDestroyImage(c->pre.orig_image);
-                              c->pre.orig_image = NULL; }
-                        if (c->pre.scaled_image)
-                            { XDestroyImage(c->pre.scaled_image);
-                              c->pre.scaled_image = NULL; }
-                    }
-                    if (_clicked_preview) done = 1;
-                    /* click outside — just unfocus search */
-                    else { search_focused = 0; DRAW_SEARCHBAR(); }
-                } else if (event.xbutton.button == Button3) {
-                    done = 1;
-                }
-                break;
+				if (ev.xbutton.window == tab_win) {
+					OverviewTab nt = (ev.xbutton.x < tab_w/2)
+						? TAB_WINDOWS : TAB_APPS;
+					cur_tab = nt; cur_view = VIEW_MAIN; sel_app = NULL; page = 0;
+					search_len = 0; search_buf[0] = '\0';
+					REBUILD_CARDS();
+					ov_draw_tabs(tab_win, gc_tab, font_b, cur_tab, tab_w, OV_TAB_H);
+					ov_draw_searchbar(sb_win, gc_sb, font_b,
+							  search_buf, 0, cursor_vis, sb_w, OV_SB_H);
+					break;
+				}
 
-            case EnterNotify:
-                for (c = m->clients; c; c = c->next){
-                    if (ispanel(c)) continue;
-                    if (event.xcrossing.window == c->pre.win){
-                        XSetWindowBorder(dpy, c->pre.win,
-                            scheme[SchemeSel][ColBorder].pixel);
-                        break;
-                    }
-                }
-                break;
+				if (ev.xbutton.window == pg_win) {
+					int pad2=10, bw2=110, gap2=24, ind_w2=120, bh2=OV_PG_H-pad2*2, by2=pad2;
+					int total_row2=bw2+gap2+ind_w2+gap2+bw2;
+					int start_x2=(sw-total_row2)/2;
+					int bx=ev.xbutton.x, byc=ev.xbutton.y;
+					if (bx>=start_x2&&bx<start_x2+bw2&&byc>=by2&&byc<by2+bh2&&page>0)
+					{ page--; REBUILD_CARDS(); }
+					else if (bx>=start_x2+bw2+gap2+ind_w2+gap2&&bx<start_x2+total_row2&&byc>=by2&&byc<by2+bh2&&page<total_pages-1)
+					{ page++; REBUILD_CARDS(); }
+					break;
+				}
 
-            case LeaveNotify:
-                for (c = m->clients; c; c = c->next){
-                    if (ispanel(c)) continue;
-                    if (event.xcrossing.window == c->pre.win){
-                        XSetWindowBorder(dpy, c->pre.win,
-                            scheme[SchemeNorm][ColBorder].pixel);
-                        break;
-                    }
-                }
-                break;
-            }
-        }
-    }
+				if (ev.xbutton.button == Button4) {
+					/* scroll up = move selection left */
+					if (cur_tab == TAB_APPS || cur_view == VIEW_MAIN) {
+						if (kbd_idx < 0) {
+							kbd_idx = 0;
+						} else {
+							int prev = kbd_idx;
+							if (kbd_idx > 0) {
+								kbd_idx--;
+								if (prev >= 0 && prev < n_cards) REDRAW_CARD(prev, 0, 0);
+								if (kbd_idx >= 0 && kbd_idx < n_cards) REDRAW_CARD(kbd_idx, 1, 1);
+							} else if (page > 0) {
+								page--;
+								REBUILD_CARDS();
+								kbd_idx = n_cards - 1;
+								if (kbd_idx >= 0 && kbd_idx < n_cards) REDRAW_CARD(kbd_idx, 1, 1);
+							}
+						}
+					} else {
+						if (page > 0) { page--; REBUILD_CARDS(); }
+					}
+					break;
+				}
+				if (ev.xbutton.button == Button5) {
+					/* scroll down = move selection right */
+					if (cur_tab == TAB_APPS || cur_view == VIEW_MAIN) {
+						if (kbd_idx < 0) {
+							kbd_idx = 0;
+							if (kbd_idx < n_cards) REDRAW_CARD(kbd_idx, 1, 1);
+						} else {
+							int prev = kbd_idx;
+							if (kbd_idx < n_cards - 1) {
+								kbd_idx++;
+								if (prev >= 0 && prev < n_cards) REDRAW_CARD(prev, 0, 0);
+								if (kbd_idx >= 0 && kbd_idx < n_cards) REDRAW_CARD(kbd_idx, 1, 1);
+							} else if (page < total_pages - 1) {
+								page++;
+								REBUILD_CARDS();
+								kbd_idx = 0;
+								if (kbd_idx < n_cards) REDRAW_CARD(kbd_idx, 1, 1);
+							}
+						}
+					} else {
+						if (page < total_pages-1) { page++; REBUILD_CARDS(); }
+					}
+					break;
+				}
 
-    #undef DRAW_SEARCHBAR
-    #undef REDRAW_CLIENT
-    #undef RELAYOUT_VISIBLE
-    #undef BAR_H
-    #undef MAX_SINGLE_W
-    #undef MAX_SINGLE_H
+				if (ev.xbutton.button == Button1) {
+					for (int i = 0; i < n_cards; i++) {
+						if (card_wins[i] != ev.xbutton.window) continue;
+						int t = card_type[i];
+						if (t < 0) break;
+						if (t == 2) {
+							cur_view = VIEW_MAIN; sel_app = NULL;
+							REBUILD_CARDS();
+							ov_draw_tabs(tab_win,gc_tab,font_b,cur_tab,tab_w,OV_TAB_H);
+						} else if (t == 3) {
+							ov_launch(((AppEntry*)card_ptrs[i])->exec);
+							done = 1;
+						} else if (t == 4) {
+							Client *cc = (Client*)card_ptrs[i];
+							for (c=m->clients;c;c=c->next) {
+								if (ispanel(c)) continue;
+								XMapWindow(dpy,c->win);
+								if (c->pre.orig_image) { XDestroyImage(c->pre.orig_image); c->pre.orig_image=NULL; }
+								if (c->pre.scaled_image) { XDestroyImage(c->pre.scaled_image); c->pre.scaled_image=NULL; }
+							}
+							selmon->seltags ^= 1;
+							m->tagset[selmon->seltags] = cc->tags;
+							focus_c = cc; focus(NULL); done = 1;
+						} else if (t == 0) {
+							Client *cc = (Client*)card_ptrs[i];
+							for (c=m->clients;c;c=c->next) {
+								if (ispanel(c)) continue;
+								XMapWindow(dpy,c->win);
+								if (c->pre.orig_image) { XDestroyImage(c->pre.orig_image); c->pre.orig_image=NULL; }
+								if (c->pre.scaled_image) { XDestroyImage(c->pre.scaled_image); c->pre.scaled_image=NULL; }
+							}
+							selmon->seltags ^= 1;
+							m->tagset[selmon->seltags] = cc->tags;
+							focus_c = cc; focus(NULL); done = 1;
+						} else if (t == 1) {
+							AppEntry *ae = (AppEntry*)card_ptrs[i];
+							if (ae->running) {
+								sel_app = ae; cur_view = VIEW_APP_RUNNING;
+								REBUILD_CARDS(); RAISE_UI();
+							} else {
+								ov_launch(ae->exec); done = 1;
+							}
+						}
+						break;
+					}
+				} else if (ev.xbutton.button == Button3) {
+					if (cur_view == VIEW_APP_RUNNING) {
+						cur_view = VIEW_MAIN; sel_app = NULL;
+						REBUILD_CARDS();
+						ov_draw_tabs(tab_win,gc_tab,font_b,cur_tab,tab_w,OV_TAB_H);
+					} else {
+						done = 1;
+					}
+				}
+				break;
+			}
 
-    if (font) XFreeFont(dpy, font);
-    XFreeGC(dpy, sgc);
-    XDestroyWindow(dpy, searchwin);
-    XUngrabKeyboard(dpy, CurrentTime);
-    XUngrabPointer(dpy, CurrentTime);
+			case KeyPress: {
+				KeySym ks = XKeycodeToKeysym(dpy, ev.xkey.keycode, 0);
 
-    if (!focus_c) {
-        for (c = m->clients; c; c = c->next){
-            if (ispanel(c)) continue;
-            if (c->pre.win) XUnmapWindow(dpy, c->pre.win);
-            XMapWindow(dpy, c->win);
-            if (c->pre.orig_image)
-                { XDestroyImage(c->pre.orig_image);
-                  c->pre.orig_image = NULL; }
-            if (c->pre.scaled_image)
-                { XDestroyImage(c->pre.scaled_image);
-                  c->pre.scaled_image = NULL; }
-        }
-    }
+				if (ks==XK_Left||ks==XK_Right||ks==XK_Up||ks==XK_Down) {
+					int prev = kbd_idx;
+					if (kbd_idx < 0) {
+						kbd_idx = 0;
+					} else {
+						int cols;
+						if (cur_view == VIEW_APP_RUNNING) cols = 1;
+						else if (cur_tab == TAB_WINDOWS) {
+							int v = MIN(n_cards, OV_WIN_PER_PG);
+							cols = (v<=1)?1:(v<=2)?2:3;
+						} else cols = app_cols;
 
-    arrange(m);
-    focus(focus_c);
-    XSync(dpy, True);
-    run_preview = 0;
+						if (ks == XK_Right) {
+							if (kbd_idx < n_cards-1) kbd_idx++;
+							else if (page < total_pages-1) { page++; REBUILD_CARDS(); kbd_idx=0; }
+						} else if (ks == XK_Left) {
+							if (kbd_idx > 0) kbd_idx--;
+							else if (page > 0) { page--; REBUILD_CARDS(); kbd_idx=n_cards-1; }
+						} else if (ks == XK_Down) {
+							if (kbd_idx + cols < n_cards) kbd_idx += cols;
+						} else if (ks == XK_Up) {
+							if (kbd_idx - cols >= 0) kbd_idx -= cols;
+						}
+					}
+					if (prev >= 0 && prev < n_cards) REDRAW_CARD(prev, 0, 0);
+					if (kbd_idx >= 0 && kbd_idx < n_cards) REDRAW_CARD(kbd_idx, 1, 1);
+					break;
+				}
+
+				if (ks == XK_Escape) {
+					if (cur_view == VIEW_APP_RUNNING) {
+						cur_view = VIEW_MAIN; sel_app = NULL;
+						REBUILD_CARDS();
+						ov_draw_tabs(tab_win,gc_tab,font_b,cur_tab,tab_w,OV_TAB_H);
+					} else done = 1;
+				} else if (ks == XK_Tab) {
+					cur_tab = (cur_tab==TAB_WINDOWS)?TAB_APPS:TAB_WINDOWS;
+					cur_view = VIEW_MAIN; sel_app = NULL; page = 0;
+					REBUILD_CARDS();
+					ov_draw_tabs(tab_win,gc_tab,font_b,cur_tab,tab_w,OV_TAB_H);
+				} else if (ks == XK_BackSpace) {
+					if (search_len > 0) search_buf[--search_len] = '\0';
+					page = 0; REBUILD_CARDS();
+					ov_draw_searchbar(sb_win,gc_sb,font_b,
+							  search_buf,search_len,cursor_vis,sb_w,OV_SB_H);
+				} else if (ks == XK_Return && n_cards > 0) {
+					int act = (kbd_idx >= 0 && kbd_idx < n_cards) ? kbd_idx : 0;
+					int t = card_type[act];
+					if (t == 2) {
+						cur_view = VIEW_MAIN; sel_app = NULL;
+						REBUILD_CARDS();
+						ov_draw_tabs(tab_win,gc_tab,font_b,cur_tab,tab_w,OV_TAB_H);
+					} else if (t == 3) {
+						ov_launch(((AppEntry*)card_ptrs[act])->exec); done = 1;
+					} else if (t == 4 || t == 0) {
+						Client *cc = (Client*)card_ptrs[act];
+						for (c=m->clients;c;c=c->next) {
+							if (ispanel(c)) continue;
+							XMapWindow(dpy,c->win);
+							if (c->pre.orig_image) { XDestroyImage(c->pre.orig_image); c->pre.orig_image=NULL; }
+							if (c->pre.scaled_image) { XDestroyImage(c->pre.scaled_image); c->pre.scaled_image=NULL; }
+						}
+						selmon->seltags ^= 1;
+						m->tagset[selmon->seltags] = cc->tags;
+						focus_c = cc; focus(NULL); done = 1;
+					} else if (t == 1) {
+						AppEntry *ae = (AppEntry*)card_ptrs[act];
+						if (ae->running) {
+							sel_app = ae; cur_view = VIEW_APP_RUNNING;
+							REBUILD_CARDS(); RAISE_UI();
+						} else {
+							ov_launch(ae->exec); done = 1;
+						}
+					}
+				} else {
+					char kbuf[8] = {0};
+					XLookupString(&ev.xkey, kbuf, sizeof(kbuf)-1, &ks, NULL);
+					if (kbuf[0] >= ' ' && kbuf[0] < 127
+					    && search_len < (int)sizeof(search_buf)-1) {
+						search_buf[search_len++] = kbuf[0];
+						search_buf[search_len]   = '\0';
+						page = 0; cur_view = VIEW_MAIN; sel_app = NULL;
+						REBUILD_CARDS();
+						ov_draw_searchbar(sb_win,gc_sb,font_b,
+								  search_buf,search_len,cursor_vis,
+								  sb_w,OV_SB_H);
+					}
+				}
+				break;
+			}
+
+			} /* switch */
+		}
+	}
+
+	DESTROY_CARDS();
+#undef DESTROY_CARDS
+#undef REBUILD_CARDS
+#undef RAISE_UI
+#undef DIM_BG
+#undef REDRAW_CARD
+#undef _OV_ADD_RUN_WIN
+#undef OV_MAX_CARDS
+#undef OV_SECTION_GAP
+
+	XUngrabKeyboard(dpy, CurrentTime);
+	XUngrabPointer(dpy, CurrentTime);
+	XFreeGC(dpy, gc_ov);
+	XFreeGC(dpy, gc_sb);
+	XFreeGC(dpy, gc_tab);
+	XFreeGC(dpy, gc_pg);
+	XDestroyWindow(dpy, sb_win);
+	XDestroyWindow(dpy, tab_win);
+	XDestroyWindow(dpy, pg_win);
+	XDestroyWindow(dpy, ov);
+
+	if (font_b && font_b != font_n) XFreeFont(dpy, font_b);
+	if (font_n) XFreeFont(dpy, font_n);
+	ov_free_apps(apps, nApps);
+
+	if (!focus_c) {
+		for (c = m->clients; c; c = c->next) {
+			if (ispanel(c)) continue;
+			XMapWindow(dpy, c->win);
+			if (c->pre.orig_image)   { XDestroyImage(c->pre.orig_image);   c->pre.orig_image=NULL; }
+			if (c->pre.scaled_image) { XDestroyImage(c->pre.scaled_image); c->pre.scaled_image=NULL; }
+		}
+	}
+
+	arrange(m);
+	focus(focus_c);
+	XSync(dpy, True);
+	run_preview = 0;
 }
-
-//void
-//previewallwin(const Arg *arg){
-//	(void)arg;
-//	Monitor *m = selmon;
-//	Client *c, *focus_c = NULL;
-//	unsigned int n;
-//	for (n = 0, c = m->clients; c; c = c->next){
-//		if (ispanel(c))
-//			continue;
-//		n++;
-//		c->pre.orig_image = getwindowximage(c);
-//	}
-//	if (n == 0)
-//		return;
-//	setpreviewwindowsizepositions(n, m, 60, 15);
-//	XEvent event;
-//	for(c = m->clients; c; c = c->next){
-//		if (ispanel(c))
-//			continue;
-//		if (!c->pre.win)
-//			c->pre.win = XCreateSimpleWindow(dpy, root, c->pre.x, c->pre.y, c->pre.scaled_image->width, c->pre.scaled_image->height, 1, BlackPixel(dpy, screen), WhitePixel(dpy, screen));
-//		else
-//			XMoveResizeWindow(dpy, c->pre.win, c->pre.x, c->pre.y, c->pre.scaled_image->width, c->pre.scaled_image->height);
-//		XSetWindowBorder(dpy, c->pre.win, scheme[SchemeNorm][ColBorder].pixel);
-//		XUnmapWindow(dpy, c->win);
-//		if (c->pre.win){
-//			XSelectInput(dpy, c->pre.win, ButtonPress | EnterWindowMask | LeaveWindowMask);
-//			XMapWindow(dpy, c->pre.win);
-//			GC gc = XCreateGC(dpy, c->pre.win, 0, NULL);
-//			XPutImage(dpy, c->pre.win, gc, c->pre.scaled_image, 0, 0, 0, 0, c->pre.scaled_image->width, c->pre.scaled_image->height);
-//		}
-//	}
-//	/* raise panel above preview windows */
-//	for(c = m->clients; c; c = c->next)
-//		if (ispanel(c)) {
-//			XMapWindow(dpy, c->win);
-//			XRaiseWindow(dpy, c->win);
-//		}
-//	while (1) {
-//		XNextEvent(dpy, &event);
-//		if (event.type == ButtonPress)
-//			if (event.xbutton.button == Button1){
-//				for(c = m->clients; c; c = c->next){
-//					if (ispanel(c))
-//						continue;
-//					XUnmapWindow(dpy, c->pre.win);
-//					if (event.xbutton.window == c->pre.win){
-//						selmon->seltags ^= 1;
-//						m->tagset[selmon->seltags] = c->tags;
-//						focus_c = c;
-//						focus(NULL);
-//					}
-//					XMapWindow(dpy, c->win);
-//					XDestroyImage(c->pre.orig_image);
-//					XDestroyImage(c->pre.scaled_image);
-//				}
-//				break;
-//			}
-//		if (event.type == EnterNotify)
-//			for(c = m->clients; c; c = c->next){
-//				if (ispanel(c))
-//					continue;
-//				if (event.xcrossing.window == c->pre.win){
-//					XSetWindowBorder(dpy, c->pre.win, scheme[SchemeSel][ColBorder].pixel);
-//					break;
-//				}
-//			}
-//		if (event.type == LeaveNotify)
-//			for(c = m->clients; c; c = c->next){
-//				if (ispanel(c))
-//					continue;
-//				if (event.xcrossing.window == c->pre.win){
-//					XSetWindowBorder(dpy, c->pre.win, scheme[SchemeNorm][ColBorder].pixel);
-//					break;
-//				}
-//			}
-//	}
-//	arrange(m);
-//	focus(focus_c);
-//}
 
 static void
 previewallwinwrap(const Arg *arg)
 {
-    (void)arg;
-    previewallwin(NULL);
+	(void)arg;
+	previewallwin(NULL);
 }
 
 //void
@@ -5306,10 +6864,10 @@ previewallwinwrap(const Arg *arg)
 XImage*
 scaleimagetofit(XImage *orig_image, unsigned int tw, unsigned int th) {
 	XImage *scaled_image = XCreateImage(dpy, DefaultVisual(dpy, DefaultScreen(dpy)),
-			orig_image->depth,
-			ZPixmap, 0, NULL,
-			tw, th,
-			32, 0);
+					    orig_image->depth,
+					    ZPixmap, 0, NULL,
+					    tw, th,
+					    32, 0);
 	scaled_image->data = malloc(scaled_image->height * scaled_image->bytes_per_line);
 	for (unsigned int y = 0; y < th; y++) {
 		for (unsigned int x = 0; x < tw; x++) {
@@ -5473,8 +7031,8 @@ getwindowximage(Client *c) {
 	color.alpha = 0x0000;
 	XRenderFillRectangle (dpy, PictOpSrc, pixmapPicture, &color, 0, 0, c->w, c->h);
 	XRenderComposite(dpy, hasAlpha ? PictOpOver : PictOpSrc, picture, 0,
-			pixmapPicture, 0, 0, 0, 0, 0, 0,
-			c->w, c->h);
+			 pixmapPicture, 0, 0, 0, 0, 0, 0,
+			 c->w, c->h);
 	XImage* temp = XGetImage( dpy, pixmap, 0, 0, c->w, c->h, AllPlanes, ZPixmap );
 	temp->red_mask = format2->direct.redMask << format2->direct.red;
 	temp->green_mask = format2->direct.greenMask << format2->direct.green;
@@ -5508,7 +7066,7 @@ getwindowximage(Client *c) {
 //	return scaled_image;
 //}
 
-int
+	int
 main(int argc, char *argv[])
 {
 	if (argc == 2 && !strcmp("-v", argv[1]))

@@ -6,7 +6,7 @@ static const unsigned int gappx		  = 10;        /* gaps between windows */
 static const unsigned int snap            = 32;       /* snap pixel */
 static const int scalepreview		  = 4;        /* preview scaling (display w and h / scalepreview) */
 static const int previewbar		  = 1;        /* show the bar in the preview window */
-static const char panel[][20]		  = { "xfce4-panel", "Xfce4-panel" }; /* name & cls of panel win */
+static const char panel[][20]		  = { "xfce4-panel", "Xfce4-panel", "tint2", "plank", "cairo-dock", "cairo-dock-sub", "switcher", "dockx" }; /* name & cls of panel win */
 static const int swallowfloating	  = 0;	      /* 1 means swallow floating windows by default */
 static const int showbar                  = 1;        /* 0 means no bar */
 static const int topbar                   = 1;        /* 0 means bottom bar */
@@ -58,16 +58,25 @@ static const Rule rules[] = {
 	 *	WM_NAME(STRING) = title
 	*/
 	/* class         instance  title                        tags mask  iscentered  isfloating  isterminal  noswallow  monitor */
-	{ "Gimp",        NULL,     NULL,                               0,          0,          1,          0,         0,      -1 },
-	{ "Firefox",     NULL,     NULL,                          1 << 8,          1,          0,          0,         0,      -1 },
-	{ "mrst",        NULL,     NULL,                               0,          1,          0,          1,         0,      -1 },
-	{ "zenity",      NULL,     NULL,                               0,          0,          1,          0,         1,      -1 },
-	{ "Yad",         NULL,     NULL,                               0,          0,          1,          0,         1,      -1 },
-	{ panel[1],      NULL,     NULL,                    (1 << 9) - 1,          0,          1,          0,        -1,      -1 },
-	{ NULL,          NULL,     "Event Tester",                     0,          0,          0,          0,         1,      -1 },
-	{ "mrsystray",   NULL,     NULL,                               0,          0,          1,          0,         1,      -1 },
-	{ "mrpowermenu", NULL,     NULL,                               0,          1,          1,          0,         1,      -1 },
-	{ "zenity",      NULL,     "Select items from the list",       0,          1,          1,          0,         1,      -1 },
+	{ "Gimp",         NULL,     NULL,                               0,          0,          1,          0,         0,      -1 },
+	{ "Firefox",      NULL,     NULL,                          1 << 8,          1,          0,          0,         0,      -1 },
+	{ "mrst",         NULL,     NULL,                               0,          1,          0,          1,         0,      -1 },
+	{ "zenity",       NULL,     NULL,                               0,          0,          1,          0,         1,      -1 },
+	{ "Yad",          NULL,     NULL,                               0,          0,          1,          0,         1,      -1 },
+	{ panel[1],       NULL,     NULL,                    (1 << 9) - 1,          0,          1,          0,        -1,      -1 },
+	{ panel[2],       NULL,     NULL,                    (1 << 9) - 1,          0,          1,          0,        -1,      -1 },
+	{ panel[3],       NULL,     NULL,                    (1 << 9) - 1,          0,          1,          0,        -1,      -1 },
+	{ panel[4],       NULL,     NULL,                    (1 << 9) - 1,          0,          1,          0,        -1,      -1 },
+	{ panel[5],       NULL,     NULL,                    (1 << 9) - 1,          0,          1,          0,        -1,      -1 },
+	{ panel[6],       NULL,     NULL,                    (1 << 9) - 1,          0,          1,          0,        -1,      -1 },
+	{ panel[7],       NULL,     NULL,                    (1 << 9) - 1,          0,          1,          0,        -1,      -1 },
+	{ "Wrapper-2.0",  NULL,	    "Whisker Menu",	     (1 << 9) - 1,	    0,	        1,	    0,	      -1,      -1 },
+	{ NULL,           NULL,     "Event Tester",                     0,          0,          0,          0,         1,      -1 },
+	{ "mrsystray",    NULL,     NULL,                               0,          0,          1,          0,         1,      -1 },
+	{ "mrtray-popup", NULL,	    NULL,		     (1 << 9) - 1,	    0,	        1,	    0,	       1,      -1 },
+	{ "mrpowermenu",  NULL,     NULL,                               0,          1,          1,          0,         1,      -1 },
+	{ "zenity",       NULL,     "Select items from the list",       0,          1,          1,          0,         1,      -1 },
+	{ "Dockx",        NULL,     NULL,			        0,          0,          1,          0,        -1,      -1 },
 };
 
 /* layout(s) */
@@ -108,7 +117,7 @@ static const Layout layouts[] = {
 static char dmenumon[2] = "0"; /* component of dmenucmd, manipulated in spawn() */
 static const char *dmenucmd[] = { "mrdmenu_run", "-m", dmenumon, "-fn", dmenufont, "-nb", col_gray1, "-nf", col_gray3, "-sb", col_cyan, "-sf", col_gray4, NULL };
 static const char *termcmd[]  = { "mrst", NULL };
-static const char *layoutmenu_cmd = "/usr/local/bin/layoutmenu.sh";
+static const char *layoutmenu_cmd = "/usr/local/bin/mrdwm-layoutmenu";
 
 static const Key keys[] = {
 	/* modifier                     key        function        argument */
@@ -171,6 +180,8 @@ static const Key keys[] = {
 /* click can be ClkTagBar, ClkLtSymbol, ClkStatusText, ClkWinTitle, ClkClientWin, or ClkRootWin */
 static const Button buttons[] = {
 	/* click                event mask      button          function        argument */
+	{ ClkRootWin,		0,		Button3,	spawnifdesk,	SHCMD("mrdwm-rightclick") },
+	{ ClkClientWin,		0,		Button3,	spawnifterm,	SHCMD("mrst-rightclick")  },
 	{ ClkButton,		0,		Button1,	spawn,		{.v = dmenucmd } },
 	{ ClkLtSymbol,          0,              Button1,        setlayout,      {0} },
 	{ ClkLtSymbol,          0,              Button3,        layoutmenu,     {0} },
