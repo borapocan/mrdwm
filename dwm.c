@@ -3905,6 +3905,8 @@ motionnotify(XEvent *e)
 			}
 			x += tw;
 		}
+		if (found == selmon->hov)
+			return; /* same tab still hovered: nothing to do */
 		if (found) {
 			if (selmon->hov) {
 				if (selmon->hov != selmon->sel)
@@ -5229,6 +5231,12 @@ unmanage(Client *c, int destroyed)
 	detach(c);
 	detachstack(c);
 	freeicon(c);
+	{
+		Monitor *hm;
+		for (hm = mons; hm; hm = hm->next)
+			if (hm->hov == c)
+				hm->hov = NULL;
+	}
 	if (!destroyed) {
 		wc.border_width = c->oldbw;
 		XGrabServer(dpy); /* avoid race conditions */
